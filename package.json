@@ -1,5 +1,5 @@
 {
-  "name": "n8n-nodes-neuroverse",
+  "name": "@neuroverseos/n8n-nodes-neuroverse",
   "version": "0.1.0",
   "description": "NeuroVerse Guard node for n8n. Evaluate AI agent actions against governance rules and route workflows with ALLOW, BLOCK, or PAUSE decisions.",
   "keywords": [
@@ -34,15 +34,16 @@
     "dist"
   ],
   "dependencies": {
-    "@neuroverseos/governance": "^0.2.2"
+    "@neuroverseos/governance": "^0.2.2",
+    "n8n-nodes-neuroverse": "^0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "n8n-workflow": "^1.0.0",
-    "typescript": "^5.3.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
-    "eslint": "^8.0.0"
+    "eslint": "^8.0.0",
+    "n8n-workflow": "^1.0.0",
+    "typescript": "^5.3.0"
   },
   "peerDependencies": {
     "n8n-workflow": ">=1.0.0"
