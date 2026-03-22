@@ -137,6 +137,12 @@
               "name": "subject",
               "value": "={{ $('Set Category').item.json.subject }}",
               "type": "string"
+            },
+            {
+              "id": "body",
+              "name": "body",
+              "value": "={{ $('Set Category').item.json.body }}",
+              "type": "string"
             }
           ]
         },
