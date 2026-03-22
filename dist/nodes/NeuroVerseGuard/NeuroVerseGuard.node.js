@@ -6,8 +6,42 @@ const governance_1 = require("@neuroverseos/governance");
 const fs_1 = require("fs");
 const path_1 = require("path");
 const os_1 = require("os");
-// Cache loaded worlds by key to avoid re-reading on every execution
 const worldCache = new Map();
+function getDirectoryMtime(dirPath) {
+    try {
+        // Check the directory's own mtime (changes when files are added/removed)
+        let latest = (0, fs_1.statSync)(dirPath).mtimeMs;
+        // Also check guards.json specifically since it's the most commonly edited
+        try {
+            const guardsMtime = (0, fs_1.statSync)((0, path_1.join)(dirPath, 'guards.json')).mtimeMs;
+            if (guardsMtime > latest)
+                latest = guardsMtime;
+        }
+        catch { /* file may not exist */ }
+        try {
+            const worldMtime = (0, fs_1.statSync)((0, path_1.join)(dirPath, 'world.json')).mtimeMs;
+            if (worldMtime > latest)
+                latest = worldMtime;
+        }
+        catch { /* file may not exist */ }
+        try {
+            const invariantsMtime = (0, fs_1.statSync)((0, path_1.join)(dirPath, 'invariants.json')).mtimeMs;
+            if (invariantsMtime > latest)
+                latest = invariantsMtime;
+        }
+        catch { /* file may not exist */ }
+        try {
+            const kernelMtime = (0, fs_1.statSync)((0, path_1.join)(dirPath, 'kernel.json')).mtimeMs;
+            if (kernelMtime > latest)
+                latest = kernelMtime;
+        }
+        catch { /* file may not exist */ }
+        return latest;
+    }
+    catch {
+        return 0;
+    }
+}
 class NeuroVerseGuard {
     description = {
         displayName: 'NeuroVerse Guard',
@@ -158,16 +192,19 @@ class NeuroVerseGuard {
                     const tmpZip = (0, path_1.join)(tmp, 'world.nv-world.zip');
                     (0, fs_1.writeFileSync)(tmpZip, Buffer.from(base64, 'base64'));
                     const world = await (0, governance_1.loadWorld)(tmpZip);
-                    worldCache.set(cacheKey, world);
+                    worldCache.set(cacheKey, { world, mtime: Date.now() });
                 }
             }
             else {
                 cacheKey = this.getNodeParameter('worldFilePath', i);
-                if (!worldCache.has(cacheKey)) {
-                    worldCache.set(cacheKey, await (0, governance_1.loadWorld)(cacheKey));
+                const currentMtime = getDirectoryMtime(cacheKey);
+                const cached = worldCache.get(cacheKey);
+                if (!cached || cached.mtime < currentMtime) {
+                    const world = await (0, governance_1.loadWorld)(cacheKey);
+                    worldCache.set(cacheKey, { world, mtime: currentMtime });
                 }
             }
-            const world = worldCache.get(cacheKey);
+            const world = worldCache.get(cacheKey).world;
             // ─── Build guard event ──────────────────────────────────────
             // The governance engine matches patterns against intent + tool + scope.
             // To ensure guards also catch violations in args/content (e.g. refund

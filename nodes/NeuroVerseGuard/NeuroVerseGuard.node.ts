@@ -8,12 +8,44 @@ import {
 
 import { loadWorld, evaluateGuard } from '@neuroverseos/governance';
 import type { GuardVerdict } from '@neuroverseos/governance';
-import { writeFileSync, mkdtempSync } from 'fs';
+import { writeFileSync, mkdtempSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-// Cache loaded worlds by key to avoid re-reading on every execution
-const worldCache = new Map<string, Awaited<ReturnType<typeof loadWorld>>>();
+// Cache loaded worlds by key, with mtime tracking so file changes take effect
+// without restarting n8n.
+interface CachedWorld {
+  world: Awaited<ReturnType<typeof loadWorld>>;
+  mtime: number;
+}
+const worldCache = new Map<string, CachedWorld>();
+
+function getDirectoryMtime(dirPath: string): number {
+  try {
+    // Check the directory's own mtime (changes when files are added/removed)
+    let latest = statSync(dirPath).mtimeMs;
+    // Also check guards.json specifically since it's the most commonly edited
+    try {
+      const guardsMtime = statSync(join(dirPath, 'guards.json')).mtimeMs;
+      if (guardsMtime > latest) latest = guardsMtime;
+    } catch { /* file may not exist */ }
+    try {
+      const worldMtime = statSync(join(dirPath, 'world.json')).mtimeMs;
+      if (worldMtime > latest) latest = worldMtime;
+    } catch { /* file may not exist */ }
+    try {
+      const invariantsMtime = statSync(join(dirPath, 'invariants.json')).mtimeMs;
+      if (invariantsMtime > latest) latest = invariantsMtime;
+    } catch { /* file may not exist */ }
+    try {
+      const kernelMtime = statSync(join(dirPath, 'kernel.json')).mtimeMs;
+      if (kernelMtime > latest) latest = kernelMtime;
+    } catch { /* file may not exist */ }
+    return latest;
+  } catch {
+    return 0;
+  }
+}
 
 export class NeuroVerseGuard implements INodeType {
   description: INodeTypeDescription = {
@@ -178,17 +210,20 @@ export class NeuroVerseGuard implements INodeType {
           const tmpZip = join(tmp, 'world.nv-world.zip');
           writeFileSync(tmpZip, Buffer.from(base64, 'base64'));
           const world = await loadWorld(tmpZip);
-          worldCache.set(cacheKey, world);
+          worldCache.set(cacheKey, { world, mtime: Date.now() });
         }
       } else {
         cacheKey = this.getNodeParameter('worldFilePath', i) as string;
+        const currentMtime = getDirectoryMtime(cacheKey);
+        const cached = worldCache.get(cacheKey);
 
-        if (!worldCache.has(cacheKey)) {
-          worldCache.set(cacheKey, await loadWorld(cacheKey));
+        if (!cached || cached.mtime < currentMtime) {
+          const world = await loadWorld(cacheKey);
+          worldCache.set(cacheKey, { world, mtime: currentMtime });
         }
       }
 
-      const world = worldCache.get(cacheKey)!;
+      const world = worldCache.get(cacheKey)!.world;
 
       // ─── Build guard event ──────────────────────────────────────
       // The governance engine matches patterns against intent + tool + scope.
