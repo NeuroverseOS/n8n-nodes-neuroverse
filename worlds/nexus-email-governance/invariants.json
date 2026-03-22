@@ -1,0 +1,30 @@
+[
+  {
+    "id": "no-sensitive-data",
+    "label": "No Sensitive Data Disclosure",
+    "type": "structural",
+    "immutable": true,
+    "description": "Agent must never include passwords, SSNs, credit card numbers, or internal system credentials in email replies."
+  },
+  {
+    "id": "no-unauthorized-refunds",
+    "label": "No Unauthorized Refunds",
+    "type": "structural",
+    "immutable": true,
+    "description": "Agent must not promise or issue refunds, credits, or financial compensation without human approval."
+  },
+  {
+    "id": "escalation-required-for-complaints",
+    "label": "Escalation Required for Complaints",
+    "type": "operational",
+    "immutable": false,
+    "description": "Formal complaints, legal threats, or dissatisfied customers must be escalated to a human agent."
+  },
+  {
+    "id": "professional-tone",
+    "label": "Professional Tone Required",
+    "type": "operational",
+    "immutable": false,
+    "description": "All replies must maintain a professional, empathetic tone appropriate for customer service."
+  }
+]

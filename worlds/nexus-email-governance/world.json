@@ -1,0 +1,10 @@
+{
+  "world_id": "nexus-email-governance",
+  "name": "Customer Service Email Governance",
+  "version": "1.0.0",
+  "description": "Governance rules for AI-assisted customer service email responses. Routes agent replies to ALLOW, BLOCK, or PAUSE based on content safety and compliance.",
+  "format_version": "1.0.0",
+  "created_at": "2026-03-22T00:00:00Z",
+  "last_modified": "2026-03-22T00:00:00Z",
+  "authoring_method": "manual-authoring"
+}
