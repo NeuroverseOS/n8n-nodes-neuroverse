@@ -17,6 +17,99 @@ import { writeFileSync, mkdtempSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
+// ─── Field Name Normalization (Fix 3) ─────────────────────────────────────────
+// extractContentFields recognizes specific key names. Real-world workflows use
+// many synonyms.  Normalize before passing to the governance function.
+
+const DRAFT_REPLY_ALIASES = new Set([
+  'draft_reply', 'reply', 'reply_text', 'reply_body',
+  'response', 'response_text', 'response_body',
+  'answer', 'answer_text',
+  'draft', 'draft_text', 'draft_body',
+  'output', 'ai_output', 'ai_response', 'generated_reply',
+]);
+
+const CUSTOMER_INPUT_ALIASES = new Set([
+  'customer_input', 'customer_message', 'customer_text',
+  'user_input', 'user_message', 'user_text',
+  'email_body', 'email_text', 'email_content',
+  'message', 'message_text', 'message_body',
+  'msg', 'inquiry', 'question', 'request',
+  'incoming', 'incoming_message', 'original_message',
+  'ticket_body', 'ticket_text',
+]);
+
+const CONTEXT_ALIASES = new Set([
+  'context', 'metadata', 'subject', 'topic',
+  'email_subject', 'subject_line', 'category',
+  'channel', 'source', 'tags',
+]);
+
+function normalizeFieldNames(args: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = {};
+  let hasDraftReply = false;
+  let hasCustomerInput = false;
+  let hasContext = false;
+
+  for (const [key, value] of Object.entries(args)) {
+    const lowerKey = key.toLowerCase();
+
+    if (!hasDraftReply && DRAFT_REPLY_ALIASES.has(lowerKey)) {
+      normalized['draft_reply'] = value;
+      hasDraftReply = true;
+    } else if (!hasCustomerInput && CUSTOMER_INPUT_ALIASES.has(lowerKey)) {
+      normalized['customer_input'] = value;
+      hasCustomerInput = true;
+    } else if (!hasContext && CONTEXT_ALIASES.has(lowerKey)) {
+      normalized['context'] = value;
+      hasContext = true;
+    } else {
+      normalized[key] = value;
+    }
+  }
+
+  return normalized;
+}
+
+// ─── Vocabulary Resolution ────────────────────────────────────────────────────
+// The guard engine's pattern matching can over-trigger on action verbs in raw
+// text.  If the intent matches a safe (non-blocking) vocabulary pattern, resolve
+// it to the vocabulary key.  This gives the engine a clean semantic label to
+// evaluate instead of raw text that might partially match blocking patterns.
+
+function resolveToVocabularyKey(intent: string, world: any): string {
+  try {
+    const vocabulary: Record<string, { pattern: string }> = world?.guards?.intent_vocabulary ?? {};
+    const guards: any[] = world?.guards?.guards ?? [];
+
+    // Build a set of vocabulary keys that are referenced by blocking guards —
+    // we never want to resolve TO a blocking intent.
+    const blockingKeys = new Set<string>();
+    for (const guard of guards) {
+      if (guard.enforcement === 'block' || guard.enforcement === 'pause') {
+        for (const key of guard.intent_patterns ?? []) {
+          blockingKeys.add(key);
+        }
+      }
+    }
+
+    // Try to match intent against vocabulary patterns.  Return the first
+    // non-blocking key that matches.
+    for (const [key, entry] of Object.entries(vocabulary)) {
+      if (blockingKeys.has(key)) continue; // don't resolve to blocking intents
+      if (!entry.pattern) continue;
+      try {
+        const regex = new RegExp(entry.pattern, 'i');
+        if (regex.test(intent)) {
+          return key; // e.g. "reply_to_inquiry", "send_information"
+        }
+      } catch { /* invalid regex */ }
+    }
+  } catch { /* world structure may vary */ }
+
+  return intent; // no match — keep original
+}
+
 // ─── World Cache ──────────────────────────────────────────────────────────────
 
 interface CachedWorld {
@@ -38,6 +131,108 @@ function getDirectoryMtime(dirPath: string): number {
   } catch {
     return 0;
   }
+}
+
+// ─── Tool Surface Validation (Fix 1) ─────────────────────────────────────────
+// If the tool doesn't match any guard's appliesTo, also evaluate WITHOUT the
+// tool so guards with appliesTo still fire.  Attacker can't bypass by using
+// an unknown tool name.
+
+function getKnownToolSurfaces(world: any): Set<string> {
+  const surfaces = new Set<string>();
+  try {
+    const toolSurfaces = world?.guards?.tool_surfaces ?? [];
+    for (const s of toolSurfaces) {
+      if (typeof s === 'string') surfaces.add(s.toLowerCase());
+    }
+    const guards = world?.guards?.guards ?? [];
+    for (const g of guards) {
+      if (Array.isArray(g.appliesTo)) {
+        for (const t of g.appliesTo) {
+          if (typeof t === 'string') surfaces.add(t.toLowerCase());
+        }
+      }
+    }
+  } catch { /* world structure may vary */ }
+  return surfaces;
+}
+
+function takeStrictestVerdict(a: GuardVerdict, b: GuardVerdict): GuardVerdict {
+  const severity: Record<string, number> = { BLOCK: 3, PAUSE: 2, WARN: 1, ALLOW: 0 };
+  const aScore = severity[a.status] ?? 0;
+  const bScore = severity[b.status] ?? 0;
+  return bScore > aScore ? b : a;
+}
+
+// ─── Content Safety Scan (Fix 4) ──────────────────────────────────────────────
+// After intent evaluation, scan the actual content (draft replies, email bodies)
+// against immutable guard patterns.  Intent classification correctly separates
+// "what you're doing" from "what the content says" — but content itself can
+// still violate policy (e.g. an ALLOW'd "customer_reply" that contains a
+// password in the body).
+
+// Direct content patterns catch raw sensitive data in message bodies regardless
+// of whether the world's intent patterns (which are verb+noun combos) match.
+// These detect the DATA ITSELF, not the intent to share it.
+const SENSITIVE_CONTENT_PATTERNS: Array<{ id: string; pattern: RegExp; label: string }> = [
+  // Actual credential-like values in text
+  { id: 'raw-password',     pattern: /password\s*[:=]\s*\S+/i,                              label: 'Password value in content' },
+  { id: 'raw-api-key',      pattern: /api[_-]?key\s*[:=]\s*\S+/i,                           label: 'API key value in content' },
+  { id: 'raw-token',        pattern: /(access[_-]?token|bearer|secret[_-]?key)\s*[:=]\s*\S+/i, label: 'Token/secret value in content' },
+  { id: 'raw-ssn',          pattern: /\b\d{3}-\d{2}-\d{4}\b/,                               label: 'SSN pattern in content' },
+  { id: 'raw-credit-card',  pattern: /\b(?:\d[ -]*?){13,19}\b/,                             label: 'Credit card number pattern in content' },
+  { id: 'raw-private-key',  pattern: /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/i,            label: 'Private key in content' },
+];
+
+function scanContentAgainstImmutableGuards(
+  contentText: string,
+  world: any,
+): { violated: boolean; guardId?: string; reason?: string } {
+  if (!contentText || contentText.length === 0) {
+    return { violated: false };
+  }
+
+  // Layer 1: World's intent vocabulary patterns (verb+noun combos)
+  try {
+    const guards: any[] = world?.guards?.guards ?? [];
+    const vocabulary: Record<string, { pattern: string }> = world?.guards?.intent_vocabulary ?? {};
+
+    for (const guard of guards) {
+      if (!guard.immutable) continue;
+      if (guard.enforcement !== 'block') continue;
+
+      for (const patternKey of guard.intent_patterns ?? []) {
+        const vocabEntry = vocabulary[patternKey];
+        if (!vocabEntry?.pattern) continue;
+
+        try {
+          const regex = new RegExp(vocabEntry.pattern, 'i');
+          if (regex.test(contentText)) {
+            return {
+              violated: true,
+              guardId: guard.id,
+              reason: `Content violates ${guard.label}: matched pattern "${patternKey}" in reply/message body. The agent's intent was allowed, but the content itself contains a policy violation.`,
+            };
+          }
+        } catch { /* invalid regex — skip */ }
+      }
+    }
+  } catch { /* world structure may vary */ }
+
+  // Layer 2: Direct sensitive data detection — catches raw values
+  // (password=X, SSN, credit card numbers, private keys) even when
+  // no action verb precedes them.
+  for (const check of SENSITIVE_CONTENT_PATTERNS) {
+    if (check.pattern.test(contentText)) {
+      return {
+        violated: true,
+        guardId: `content-scan-${check.id}`,
+        reason: `${check.label} detected in reply/message body. The agent's intent was allowed, but the content contains sensitive data that must not be sent.`,
+      };
+    }
+  }
+
+  return { violated: false };
 }
 
 // ─── Node ─────────────────────────────────────────────────────────────────────
@@ -189,6 +384,15 @@ export class NeuroVerseGuard implements INodeType {
         description: 'Custom API endpoint. Required for Ollama, optional for OpenAI/Anthropic.',
         displayOptions: { show: { aiClassification: [true] } },
       },
+      // ─── Strict Enforcement (Fix 2) ───────────────────────────────
+      {
+        displayName: 'Strict Enforcement',
+        name: 'strictEnforcement',
+        type: 'boolean' as const,
+        default: false,
+        description:
+          'When enabled, BLOCK verdicts throw a node error and stop the workflow entirely. Prevents downstream nodes from ignoring governance decisions.',
+      },
       // ─── Additional Fields ────────────────────────────────────────
       {
         displayName: 'Additional Fields',
@@ -237,6 +441,7 @@ export class NeuroVerseGuard implements INodeType {
       const tool = this.getNodeParameter('tool', i) as string;
       const level = this.getNodeParameter('level', i) as string;
       const aiClassification = this.getNodeParameter('aiClassification', i, false) as boolean;
+      const strictEnforcement = this.getNodeParameter('strictEnforcement', i, false) as boolean;
       const additionalFields = this.getNodeParameter('additionalFields', i) as {
         irreversible?: boolean;
         role?: string;
@@ -291,33 +496,35 @@ export class NeuroVerseGuard implements INodeType {
         }
       }
 
+      // ─── Fix 3: Normalize field names before extraction ─────────
+      const normalizedArgs = normalizeFieldNames(mergedArgs);
+
+      // ─── Fix 1: Detect unknown tool surfaces ───────────────────
+      const knownSurfaces = getKnownToolSurfaces(world);
+      const toolIsKnown = !tool || knownSurfaces.has(tool.toLowerCase());
+
       // ─── Build guard event ──────────────────────────────────────
       const event: Record<string, unknown> = { intent };
       if (tool) event.tool = tool;
       if (additionalFields.irreversible) event.irreversible = true;
       if (additionalFields.role) event.roleId = additionalFields.role;
-      if (Object.keys(mergedArgs).length > 0) event.args = mergedArgs;
+      if (Object.keys(normalizedArgs).length > 0) event.args = normalizedArgs;
 
       // ─── Evaluate ───────────────────────────────────────────────
       let verdict: GuardVerdict;
       let intentSource: string = 'raw';
       let classification: unknown = undefined;
       let originalIntent: string | undefined = undefined;
+      let contentScanOverride = false;
+      let contentScanGuardId: string | undefined = undefined;
 
       if (aiClassification) {
-        // Use the governance package's evaluateGuardWithAI which:
-        //   1. Extracts content fields from event.args (separates who said what)
-        //   2. Classifies true intent via LLM
-        //   3. Runs evaluateGuard with the clean classified intent
-        //   4. Falls back to raw intent on AI failure
         const aiProvider = this.getNodeParameter('aiProvider', i) as string;
         const aiModel = this.getNodeParameter('aiModel', i) as string;
         const aiApiKey = this.getNodeParameter('aiApiKey', i, '') as string;
         const aiEndpoint = this.getNodeParameter('aiEndpoint', i, '') as string;
 
-        // Pre-extract content fields from the merged args so the classifier
-        // can distinguish customer input from AI output
-        const contentFields = extractContentFields(intent, mergedArgs);
+        const contentFields = extractContentFields(intent, normalizedArgs);
 
         const aiVerdict = await evaluateGuardWithAI(
           event as any,
@@ -340,31 +547,85 @@ export class NeuroVerseGuard implements INodeType {
         classification = aiVerdict.classification;
         originalIntent = aiVerdict.originalIntent;
       } else {
-        // Legacy path: enrich intent with all text content for regex matching
-        let enrichedIntent = intent;
+        // Use extractContentFields to separate clean intent from content.
+        const contentFields = extractContentFields(intent, normalizedArgs);
 
-        if (parsedArgs) {
-          const argsText = Object.values(parsedArgs)
-            .filter((v) => typeof v === 'string')
-            .join(' ');
-          if (argsText) {
-            enrichedIntent = `${intent} ${argsText}`;
-          }
+        // extractContentFields may put the intent into customer_input and leave
+        // raw empty.  Extract the clean action label: take everything before the
+        // first colon or newline (e.g. "Send general reply: Dear Customer..."
+        // becomes "Send general reply").  If that's still long, truncate to the
+        // first sentence.
+        let cleanIntent = contentFields.raw || intent;
+        if (cleanIntent.length > 80) {
+          const colonIdx = cleanIntent.indexOf(':');
+          const nlIdx = cleanIntent.indexOf('\n');
+          const cutIdx = colonIdx > 0 && colonIdx < 120 ? colonIdx
+            : nlIdx > 0 && nlIdx < 120 ? nlIdx
+            : 80;
+          cleanIntent = cleanIntent.substring(0, cutIdx).trim();
         }
 
-        for (const [, value] of Object.entries(inputJson)) {
-          if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
-            const sample = value.substring(0, 50);
-            if (!enrichedIntent.includes(sample)) {
-              enrichedIntent = `${enrichedIntent} ${value}`;
-            }
-          }
+        // If the cleaned intent matches a known safe vocabulary pattern from the
+        // world, use the vocabulary KEY as the intent (e.g. "Send general reply"
+        // → "reply_to_inquiry").  The engine's pattern matching can over-trigger
+        // on action verbs like "send"/"share" when they appear in raw text —
+        // vocabulary keys are what guards are designed to evaluate.
+        cleanIntent = resolveToVocabularyKey(cleanIntent, world);
+        event.intent = cleanIntent;
+
+        // Pack content into payload for safety scanning (not intent matching).
+        const contentParts: string[] = [];
+        if (contentFields.customer_input) contentParts.push(contentFields.customer_input);
+        if (contentFields.draft_reply) contentParts.push(contentFields.draft_reply);
+        if (contentFields.context) contentParts.push(contentFields.context);
+        if (contentParts.length > 0) {
+          event.payload = contentParts.join('\n').substring(0, 20000);
         }
 
-        event.intent = enrichedIntent;
         verdict = evaluateGuard(event as any, world, { level } as any);
       }
 
+      // ─── Fix 1: Re-evaluate with known surfaces if tool is unknown ──
+      // The guard engine skips guards with appliesTo when the event's tool
+      // doesn't match (including when tool is absent).  If the provided tool
+      // isn't recognized, re-evaluate with each known tool surface and take
+      // the strictest verdict.  Fail closed, not open.
+      if (!toolIsKnown) {
+        for (const surface of knownSurfaces) {
+          const probeEvent = { ...event, tool: surface };
+          const probeVerdict = evaluateGuard(probeEvent as any, world, { level } as any);
+          verdict = takeStrictestVerdict(verdict, probeVerdict);
+          if (verdict.status === 'BLOCK') break; // can't get stricter
+        }
+      }
+
+      // ─── Fix 4: Content safety scan ─────────────────────────────
+      // Even if the intent is clean (ALLOW), scan the actual content
+      // (draft replies, email bodies) against immutable guard patterns.
+      // An agent with intent "customer_reply" (ALLOW) could still put
+      // "Your password is hunter2" in the reply body.
+      if (verdict.status !== 'BLOCK') {
+        const contentFields = extractContentFields(intent, normalizedArgs);
+        const contentToScan = [
+          contentFields.draft_reply,
+          contentFields.customer_input,
+          typeof event.payload === 'string' ? event.payload : '',
+        ].filter(Boolean).join('\n');
+
+        const contentResult = scanContentAgainstImmutableGuards(contentToScan, world);
+        if (contentResult.violated) {
+          contentScanOverride = true;
+          contentScanGuardId = contentResult.guardId;
+          verdict = {
+            status: 'BLOCK',
+            reason: contentResult.reason ?? 'Content violates immutable guard policy.',
+            ruleId: contentResult.guardId ?? 'content-scan',
+            evidence: verdict.evidence,
+          } as GuardVerdict;
+        }
+      }
+
+      // ─── Build output ───────────────────────────────────────────
       const outputItem: INodeExecutionData = {
         json: {
           ...items[i].json,
@@ -377,6 +638,11 @@ export class NeuroVerseGuard implements INodeType {
           _debug: {
             intent: (event.intent as string).substring(0, 500),
             intentSource,
+            toolIsKnown,
+            ...(contentScanOverride ? {
+              contentScanOverride: true,
+              contentScanGuardId,
+            } : {}),
             ...(classification ? {
               classification,
               originalIntent,
@@ -387,6 +653,13 @@ export class NeuroVerseGuard implements INodeType {
           },
         },
       };
+
+      // ─── Fix 2: Strict enforcement — throw on BLOCK ────────────
+      if (strictEnforcement && verdict.status === 'BLOCK') {
+        throw new Error(
+          `[NeuroVerse Guard] BLOCKED: ${verdict.reason ?? 'Policy violation'} (rule: ${verdict.ruleId ?? 'unknown'})`,
+        );
+      }
 
       // ─── Route to output ────────────────────────────────────────
       if (verdict.status === 'BLOCK') {
