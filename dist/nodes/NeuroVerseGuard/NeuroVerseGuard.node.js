@@ -302,25 +302,28 @@ class NeuroVerseGuard {
                 originalIntent = aiVerdict.originalIntent;
             }
             else {
-                // Legacy path: enrich intent with all text content for regex matching
-                let enrichedIntent = intent;
-                if (parsedArgs) {
-                    const argsText = Object.values(parsedArgs)
-                        .filter((v) => typeof v === 'string')
-                        .join(' ');
-                    if (argsText) {
-                        enrichedIntent = `${intent} ${argsText}`;
-                    }
+                // Use extractContentFields to separate the clean intent from content.
+                // Content (draft replies, email bodies, etc.) goes into a payload field
+                // for safety scanning, but does NOT pollute the intent that guards
+                // pattern-match against. This prevents false positives like "refund"
+                // mentioned in a reply body triggering a refund-block guard.
+                const contentFields = (0, governance_1.extractContentFields)(intent, mergedArgs);
+                // The clean intent is whatever extractContentFields determines is the
+                // actual action — stripped of content that belongs to args/payload.
+                event.intent = contentFields.raw || intent;
+                // Pack all content text into payload so safety checks (prompt injection,
+                // scope escape) still scan the full text — only intent-pattern matching
+                // uses the clean label.
+                const contentParts = [];
+                if (contentFields.customer_input)
+                    contentParts.push(contentFields.customer_input);
+                if (contentFields.draft_reply)
+                    contentParts.push(contentFields.draft_reply);
+                if (contentFields.context)
+                    contentParts.push(contentFields.context);
+                if (contentParts.length > 0) {
+                    event.payload = contentParts.join('\n').substring(0, 20000);
                 }
-                for (const [, value] of Object.entries(inputJson)) {
-                    if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
-                        const sample = value.substring(0, 50);
-                        if (!enrichedIntent.includes(sample)) {
-                            enrichedIntent = `${enrichedIntent} ${value}`;
-                        }
-                    }
-                }
-                event.intent = enrichedIntent;
                 verdict = (0, governance_1.evaluateGuard)(event, world, { level });
             }
             const outputItem = {
