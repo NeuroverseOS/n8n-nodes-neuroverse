@@ -281,6 +281,11 @@ export class NeuroVerseGuard implements INodeType {
             ruleId: verdict.ruleId ?? null,
             evidence: verdict.evidence ?? null,
           },
+          _debug: {
+            enrichedIntent: enrichedIntent.substring(0, 500),
+            bodyFieldValue: typeof inputJson['body'] === 'string' ? inputJson['body'].substring(0, 100) : String(inputJson['body']),
+            fieldsFound: contentFields.filter(f => typeof inputJson[f] === 'string'),
+          },
         },
       };
 
