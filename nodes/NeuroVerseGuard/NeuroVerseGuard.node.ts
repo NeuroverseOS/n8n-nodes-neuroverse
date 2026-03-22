@@ -228,8 +228,8 @@ export class NeuroVerseGuard implements INodeType {
       // ─── Build guard event ──────────────────────────────────────
       // The governance engine matches patterns against intent + tool + scope.
       // To ensure guards also catch violations in args/content (e.g. refund
-      // language in a draft_reply), we append a text summary of args to the
-      // intent so the engine's regex patterns can scan it.
+      // language in a draft_reply), we enrich the intent with content from
+      // both the args parameter AND the input item's JSON data.
       let enrichedIntent = intent;
       let parsedArgs: unknown = undefined;
       if (additionalFields.args) {
@@ -248,6 +248,18 @@ export class NeuroVerseGuard implements INodeType {
             : '';
         if (argsText) {
           enrichedIntent = `${intent} ${argsText}`;
+        }
+      }
+
+      // Also scan known content fields from the input data directly.
+      // This ensures guard patterns catch violations even if the args
+      // parameter doesn't resolve correctly at runtime (n8n collection quirk).
+      const contentFields = ['draft_reply', 'content', 'body', 'message', 'text', 'reply'];
+      const inputJson = items[i].json as Record<string, unknown>;
+      for (const field of contentFields) {
+        const value = inputJson[field];
+        if (typeof value === 'string' && value.length > 0 && !enrichedIntent.includes(value.substring(0, 50))) {
+          enrichedIntent = `${enrichedIntent} ${value}`;
         }
       }
 
