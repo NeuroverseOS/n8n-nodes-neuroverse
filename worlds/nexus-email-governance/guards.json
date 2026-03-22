@@ -9,7 +9,7 @@
       "immutable": true,
       "invariant_ref": "no-sensitive-data",
       "intent_patterns": ["share_credentials", "disclose_internal", "share_payment_data"],
-      "appliesTo": ["email", "email-api", "send-email", "gmail", "smtp"]
+      "appliesTo": ["email", "email-api", "email-system", "send-email", "gmail", "smtp"]
     },
     {
       "id": "guard-block-unauthorized-refund",
@@ -20,7 +20,7 @@
       "immutable": true,
       "invariant_ref": "no-unauthorized-refunds",
       "intent_patterns": ["issue_refund", "promise_compensation"],
-      "appliesTo": ["email", "email-api", "send-email", "gmail", "smtp"]
+      "appliesTo": ["email", "email-api", "email-system", "send-email", "gmail", "smtp"]
     },
     {
       "id": "guard-pause-escalation",
@@ -31,7 +31,7 @@
       "immutable": false,
       "invariant_ref": "escalation-required-for-complaints",
       "intent_patterns": ["handle_complaint", "respond_to_threat", "escalate_issue"],
-      "appliesTo": ["email", "email-api", "send-email", "gmail", "smtp"]
+      "appliesTo": ["email", "email-api", "email-system", "send-email", "gmail", "smtp"]
     },
     {
       "id": "guard-warn-tone",
@@ -42,7 +42,7 @@
       "immutable": false,
       "invariant_ref": "professional-tone",
       "intent_patterns": ["casual_reply", "dismissive_response"],
-      "appliesTo": ["email", "email-api", "send-email", "gmail", "smtp"]
+      "appliesTo": ["email", "email-api", "email-system", "send-email", "gmail", "smtp"]
     }
   ],
   "intent_vocabulary": {
@@ -95,5 +95,5 @@
       "pattern": "(send|provide|share|give).{0,20}(information|details|instructions|steps|guide|link|article)"
     }
   },
-  "tool_surfaces": ["email", "email-api", "send-email", "gmail", "smtp"]
+  "tool_surfaces": ["email", "email-api", "email-system", "send-email", "gmail", "smtp"]
 }
