@@ -299,7 +299,7 @@
     {
       "parameters": {
         "worldFilePath": "/Users/kirstenbischoff/n8n-nodes-neuroverse/worlds/nexus-email-governance",
-        "intent": "{{ $json.intent }}",
+        "intent": "={{ $json.intent }}",
         "tool": "email-system",
         "additionalFields": {
           "args": "=content: {{ $json.draft_reply }}"
@@ -415,7 +415,7 @@
             {
               "id": "ad73764d-7b7e-42f2-81d8-277f44523088",
               "name": "audit_record.timestamp",
-              "value": "{{ new Date().toISOString() }}",
+              "value": "={{ new Date().toISOString() }}",
               "type": "string"
             },
             {
