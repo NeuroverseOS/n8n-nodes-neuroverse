@@ -117,7 +117,7 @@
             {
               "id": "intent",
               "name": "intent",
-              "value": "={{ 'Send ' + $('Set Category').item.json.email_category + ' reply: ' + $json.message.content.substring(0, 200) }}",
+              "value": "={{ 'Send ' + $('Set Category').item.json.email_category + ' reply: ' + $json.message.content + ' original_email: ' + $('Set Category').item.json.body }}",
               "type": "string"
             },
             {
@@ -136,6 +136,12 @@
               "id": "subject",
               "name": "subject",
               "value": "={{ $('Set Category').item.json.subject }}",
+              "type": "string"
+            },
+            {
+              "id": "body",
+              "name": "body",
+              "value": "={{ $('Set Category').item.json.body }}",
               "type": "string"
             }
           ]
@@ -299,7 +305,7 @@
     {
       "parameters": {
         "worldFilePath": "/Users/kirstenbischoff/n8n-nodes-neuroverse/worlds/nexus-email-governance",
-        "intent": "{{ $json.intent }}",
+        "intent": "={{ $json.intent }}",
         "tool": "email-system",
         "additionalFields": {
           "args": "=content: {{ $json.draft_reply }}"
@@ -389,6 +395,82 @@
     },
     {
       "parameters": {
+        "jsCode": "const items = $input.all();\n\nfor (const item of items) {\n\n  const verdict = item.json.verdict || {};\n  const evidence = item.json.evidence || {};\n\n  item.json.audit_record = {\n    timestamp: new Date().toISOString(),\n    decision: verdict.status || \"PAUSE\",\n    rule_triggered: verdict.ruleId || null,\n    reason: verdict.reason || null,\n    \n    email: {\n      from: item.json.from,\n      subject: item.json.subject,\n      category: item.json.email_category\n    },\n\n    governance_world: {\n      id: evidence.worldId,\n      name: evidence.worldName,\n      version: evidence.worldVersion\n    }\n  };\n\n}\n\nreturn items;"
+      },
+      "id": "pause-log-1",
+      "name": "Pause Governance Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-336, 144],
+      "notes": "Logs all paused actions for audit review"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "pause-audit-timestamp",
+              "name": "audit_record.timestamp",
+              "value": "={{ new Date().toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "pause-audit-decision",
+              "name": "audit_record.decision",
+              "value": "={{$json.verdict.ruleId}}",
+              "type": "string"
+            },
+            {
+              "id": "pause-audit-reason",
+              "name": "audit_record.reason",
+              "value": "={{$json.verdict.reason}}",
+              "type": "string"
+            },
+            {
+              "id": "pause-audit-from",
+              "name": "audit_record.email_from",
+              "value": "={{$json.from}}",
+              "type": "string"
+            },
+            {
+              "id": "pause-audit-subject",
+              "name": "audit_record.subject",
+              "value": "={{$json.subject}}",
+              "type": "string"
+            },
+            {
+              "id": "pause-audit-category",
+              "name": "audit_record.category",
+              "value": "={{$json.email_category}}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-48, 144],
+      "id": "pause-audit-1",
+      "name": "Pause Audit Record"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'paused', reason: $json.verdict.reason, evidence: $json.verdict.evidence, draft_reply: $json.draft_reply, message: 'This reply requires human review before sending. A supervisor has been notified.' }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "respond-pause-1",
+      "name": "Respond PAUSED",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [320, 144]
+    },
+    {
+      "parameters": {
         "assignments": {
           "assignments": [
             {
@@ -415,7 +497,7 @@
             {
               "id": "ad73764d-7b7e-42f2-81d8-277f44523088",
               "name": "audit_record.timestamp",
-              "value": "{{ new Date().toISOString() }}",
+              "value": "={{ new Date().toISOString() }}",
               "type": "string"
             },
             {
@@ -598,6 +680,39 @@
         [
           {
             "node": "Governance Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields2": {
+      "main": [
+        [
+          {
+            "node": "Pause Governance Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pause Governance Log": {
+      "main": [
+        [
+          {
+            "node": "Pause Audit Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pause Audit Record": {
+      "main": [
+        [
+          {
+            "node": "Respond PAUSED",
             "type": "main",
             "index": 0
           }

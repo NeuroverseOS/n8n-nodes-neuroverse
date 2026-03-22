@@ -251,15 +251,17 @@ export class NeuroVerseGuard implements INodeType {
         }
       }
 
-      // Also scan known content fields from the input data directly.
-      // This ensures guard patterns catch violations even if the args
-      // parameter doesn't resolve correctly at runtime (n8n collection quirk).
-      const contentFields = ['draft_reply', 'content', 'body', 'message', 'text', 'reply'];
+      // Scan ALL string fields from the input data for safety pattern matching.
+      // This ensures the guard catches prompt injection, refund language, etc.
+      // regardless of which field name carries the attacker-controlled text.
       const inputJson = items[i].json as Record<string, unknown>;
-      for (const field of contentFields) {
-        const value = inputJson[field];
-        if (typeof value === 'string' && value.length > 0 && !enrichedIntent.includes(value.substring(0, 50))) {
-          enrichedIntent = `${enrichedIntent} ${value}`;
+      for (const [, value] of Object.entries(inputJson)) {
+        if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
+          // Only append if not already substantially present in the enriched intent
+          const sample = value.substring(0, 50);
+          if (!enrichedIntent.includes(sample)) {
+            enrichedIntent = `${enrichedIntent} ${value}`;
+          }
         }
       }
 
@@ -280,6 +282,11 @@ export class NeuroVerseGuard implements INodeType {
             reason: verdict.reason ?? null,
             ruleId: verdict.ruleId ?? null,
             evidence: verdict.evidence ?? null,
+          },
+          _debug: {
+            enrichedIntent: enrichedIntent.substring(0, 500),
+            bodyFieldValue: typeof inputJson['body'] === 'string' ? inputJson['body'].substring(0, 100) : String(inputJson['body']),
+            stringFieldsScanned: Object.keys(inputJson).filter((k: string) => typeof inputJson[k] === 'string'),
           },
         },
       };
