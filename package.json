@@ -1,6 +1,6 @@
 {
   "name": "@neuroverseos/n8n-nodes-neuroverse",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "NeuroVerse Guard node for n8n. Evaluate AI agent actions against governance rules and route workflows with ALLOW, BLOCK, or PAUSE decisions.",
   "keywords": [
     "n8n-community-node",
