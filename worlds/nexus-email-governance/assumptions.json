@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "default": {
+      "name": "Standard Customer Service",
+      "description": "Standard enforcement for customer service email replies."
+    }
+  },
+  "default_profile": "default"
+}

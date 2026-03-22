@@ -1,0 +1,99 @@
+{
+  "guards": [
+    {
+      "id": "guard-block-sensitive-data",
+      "label": "Block Sensitive Data Disclosure",
+      "description": "Blocks any reply that attempts to share passwords, credentials, SSNs, credit card numbers, or internal system details with customers.",
+      "category": "structural",
+      "enforcement": "block",
+      "immutable": true,
+      "invariant_ref": "no-sensitive-data",
+      "intent_patterns": ["share_credentials", "disclose_internal", "share_payment_data"],
+      "appliesTo": ["email", "email-api", "send-email", "gmail", "smtp"]
+    },
+    {
+      "id": "guard-block-unauthorized-refund",
+      "label": "Block Unauthorized Refunds",
+      "description": "Blocks the agent from promising or issuing refunds, credits, or monetary compensation without escalation.",
+      "category": "structural",
+      "enforcement": "block",
+      "immutable": true,
+      "invariant_ref": "no-unauthorized-refunds",
+      "intent_patterns": ["issue_refund", "promise_compensation"],
+      "appliesTo": ["email", "email-api", "send-email", "gmail", "smtp"]
+    },
+    {
+      "id": "guard-pause-escalation",
+      "label": "Pause for Escalation",
+      "description": "Pauses processing when the customer email contains complaints, legal threats, or expressions of strong dissatisfaction requiring human review.",
+      "category": "operational",
+      "enforcement": "pause",
+      "immutable": false,
+      "invariant_ref": "escalation-required-for-complaints",
+      "intent_patterns": ["handle_complaint", "respond_to_threat", "escalate_issue"],
+      "appliesTo": ["email", "email-api", "send-email", "gmail", "smtp"]
+    },
+    {
+      "id": "guard-warn-tone",
+      "label": "Tone Advisory",
+      "description": "Warns if the reply intent suggests a tone that may not be appropriate for customer service.",
+      "category": "advisory",
+      "enforcement": "warn",
+      "immutable": false,
+      "invariant_ref": "professional-tone",
+      "intent_patterns": ["casual_reply", "dismissive_response"],
+      "appliesTo": ["email", "email-api", "send-email", "gmail", "smtp"]
+    }
+  ],
+  "intent_vocabulary": {
+    "share_credentials": {
+      "label": "Share Credentials",
+      "pattern": "(share|send|provide|give|disclose).{0,30}(password|credential|secret|api.?key|token|private.?key)"
+    },
+    "disclose_internal": {
+      "label": "Disclose Internal Info",
+      "pattern": "(share|send|reveal|disclose|expose).{0,30}(internal|system|infrastructure|database|server|admin)"
+    },
+    "share_payment_data": {
+      "label": "Share Payment Data",
+      "pattern": "(share|send|provide|give).{0,30}(credit.?card|ssn|social.?security|bank.?account|routing.?number|cvv)"
+    },
+    "issue_refund": {
+      "label": "Issue Refund",
+      "pattern": "(refund|reimburse|money.?back|credit.?account|issue.?credit|pay.?back|compensat)"
+    },
+    "promise_compensation": {
+      "label": "Promise Compensation",
+      "pattern": "(promise|guarantee|offer|give).{0,30}(discount|coupon|free|complimentary|compensation|credit)"
+    },
+    "handle_complaint": {
+      "label": "Handle Complaint",
+      "pattern": "(complaint|dissatisf|unhappy|upset|angry|frustrat|unacceptable|terrible|worst|awful|horrible)"
+    },
+    "respond_to_threat": {
+      "label": "Respond to Legal Threat",
+      "pattern": "(lawyer|attorney|legal.?action|sue|lawsuit|court|regulatory|report.?to|bbb|better.?business)"
+    },
+    "escalate_issue": {
+      "label": "Escalate Issue",
+      "pattern": "(escalat|manager|supervisor|speak.?to.?(someone|human|person|agent)|transfer)"
+    },
+    "casual_reply": {
+      "label": "Casual Reply",
+      "pattern": "(lol|haha|no worries|chill|dude|bro|whatevs|nah)"
+    },
+    "dismissive_response": {
+      "label": "Dismissive Response",
+      "pattern": "(not.?my.?problem|can.?t.?help|deal.?with.?it|too.?bad|nothing.?(we|i).?can.?do)"
+    },
+    "reply_to_inquiry": {
+      "label": "Reply to Customer Inquiry",
+      "pattern": "(help|assist|support|answer|respond|reply|reset|troubleshoot|resolve|fix|update|inform|explain)"
+    },
+    "send_information": {
+      "label": "Send Information",
+      "pattern": "(send|provide|share|give).{0,20}(information|details|instructions|steps|guide|link|article)"
+    }
+  },
+  "tool_surfaces": ["email", "email-api", "send-email", "gmail", "smtp"]
+}
