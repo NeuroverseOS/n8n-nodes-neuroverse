@@ -117,7 +117,7 @@
             {
               "id": "intent",
               "name": "intent",
-              "value": "={{ 'Send ' + $('Set Category').item.json.email_category + ' reply: ' + $json.message.content.substring(0, 200) }}",
+              "value": "={{ 'Send ' + $('Set Category').item.json.email_category + ' reply: ' + $json.message.content + ' original_email: ' + $('Set Category').item.json.body }}",
               "type": "string"
             },
             {
