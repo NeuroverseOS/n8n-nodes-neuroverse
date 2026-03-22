@@ -169,21 +169,40 @@ class NeuroVerseGuard {
             }
             const world = worldCache.get(cacheKey);
             // ─── Build guard event ──────────────────────────────────────
-            const event = { intent };
+            // The governance engine matches patterns against intent + tool + scope.
+            // To ensure guards also catch violations in args/content (e.g. refund
+            // language in a draft_reply), we append a text summary of args to the
+            // intent so the engine's regex patterns can scan it.
+            let enrichedIntent = intent;
+            let parsedArgs = undefined;
+            if (additionalFields.args) {
+                try {
+                    parsedArgs = JSON.parse(additionalFields.args);
+                }
+                catch {
+                    parsedArgs = additionalFields.args;
+                }
+                // Extract text content from args for pattern scanning
+                const argsText = typeof parsedArgs === 'string'
+                    ? parsedArgs
+                    : typeof parsedArgs === 'object' && parsedArgs !== null
+                        ? Object.values(parsedArgs)
+                            .filter((v) => typeof v === 'string')
+                            .join(' ')
+                        : '';
+                if (argsText) {
+                    enrichedIntent = `${intent} ${argsText}`;
+                }
+            }
+            const event = { intent: enrichedIntent };
             if (tool)
                 event.tool = tool;
             if (additionalFields.irreversible)
                 event.irreversible = true;
             if (additionalFields.role)
                 event.role = additionalFields.role;
-            if (additionalFields.args) {
-                try {
-                    event.args = JSON.parse(additionalFields.args);
-                }
-                catch {
-                    event.args = additionalFields.args;
-                }
-            }
+            if (parsedArgs !== undefined)
+                event.args = parsedArgs;
             // ─── Evaluate ───────────────────────────────────────────────
             const verdict = (0, governance_1.evaluateGuard)(event, world, { level });
             const outputItem = {
