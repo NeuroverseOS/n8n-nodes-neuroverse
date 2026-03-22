@@ -35,6 +35,7 @@
   ],
   "dependencies": {
     "@neuroverseos/governance": "^0.3.4",
+    "@neuroverseos/n8n-nodes-neuroverse": "^0.1.5",
     "n8n-nodes-neuroverse": "^0.1.0"
   },
   "devDependencies": {
