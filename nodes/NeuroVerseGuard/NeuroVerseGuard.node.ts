@@ -6,173 +6,16 @@ import {
   NodeConnectionTypes,
 } from 'n8n-workflow';
 
-import { loadWorld, evaluateGuard } from '@neuroverseos/governance';
+import {
+  loadWorld,
+  evaluateGuard,
+  evaluateGuardWithAI,
+  extractContentFields,
+} from '@neuroverseos/governance';
 import type { GuardVerdict } from '@neuroverseos/governance';
 import { writeFileSync, mkdtempSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-
-// ─── AI Intent Classification ─────────────────────────────────────────────────
-// Optional pre-processing step: uses an LLM to classify the TRUE intent of an
-// action before the deterministic guard engine evaluates it.  This prevents
-// false positives caused by raw text pattern matching (e.g. a customer email
-// mentioning "refund" triggering a refund-guard when the agent is just replying).
-
-interface AIClassificationConfig {
-  provider: 'openai' | 'anthropic' | 'ollama';
-  model: string;
-  apiKey: string;
-  endpoint?: string;
-}
-
-interface ClassificationResult {
-  classifiedIntent: string;
-  raw: string;
-}
-
-async function callAIProvider(
-  systemPrompt: string,
-  userPrompt: string,
-  config: AIClassificationConfig,
-): Promise<string> {
-  const { provider, model, apiKey, endpoint } = config;
-
-  if (provider === 'anthropic') {
-    const url = endpoint || 'https://api.anthropic.com/v1/messages';
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-        max_tokens: 60,
-        temperature: 0,
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`Anthropic API ${res.status}: ${await res.text()}`);
-    }
-    const data = (await res.json()) as { content: { text: string }[] };
-    return data.content[0]?.text ?? '';
-  }
-
-  if (provider === 'ollama') {
-    const url = endpoint || 'http://localhost:11434';
-    const res = await fetch(`${url}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        stream: false,
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`Ollama API ${res.status}: ${await res.text()}`);
-    }
-    const data = (await res.json()) as { message?: { content: string } };
-    return data.message?.content ?? '';
-  }
-
-  // Default: OpenAI-compatible
-  const url = endpoint || 'https://api.openai.com/v1/chat/completions';
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      max_tokens: 60,
-      temperature: 0,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`OpenAI API ${res.status}: ${await res.text()}`);
-  }
-  const data = (await res.json()) as { choices: { message: { content: string } }[] };
-  return data.choices[0]?.message?.content ?? '';
-}
-
-/**
- * Classify the true intent of an action using an LLM.
- *
- * The classifier distinguishes between what the agent is DOING (the intent)
- * and what the content being processed SAYS.  For example, an agent replying
- * to a customer who mentioned "refund" has the intent "customer_reply", not
- * "refund_request".
- */
-async function classifyIntentWithAI(
-  rawIntent: string,
-  tool: string,
-  inputData: Record<string, unknown>,
-  world: any,
-  config: AIClassificationConfig,
-): Promise<ClassificationResult> {
-  // Extract guard labels from the world to give the classifier context
-  const guards: { id: string; label: string; description: string }[] = [];
-  try {
-    const worldGuards =
-      (world as any)?.guards?.guards ??
-      (world as any)?.guards ??
-      [];
-    for (const g of worldGuards) {
-      if (g && g.id) {
-        guards.push({ id: g.id, label: g.label ?? g.id, description: g.description ?? '' });
-      }
-    }
-  } catch { /* world may not expose guards */ }
-
-  const vocabularyLines = guards.length > 0
-    ? guards.map((g) => `- ${g.id}: ${g.label} — ${g.description}`).join('\n')
-    : '(no guard vocabulary available)';
-
-  const systemPrompt = `You are an intent classifier for a governance system.
-Given an action's context, determine the TRUE intent — what the agent is DOING,
-not what the text content mentions.
-
-Critical distinction:
-- Agent REPLYING to a customer who asked about a refund → intent: "customer_reply"
-- Agent ISSUING a refund → intent: "issue_refund"
-- Agent READING a file that mentions passwords → intent: "read_file"
-- Agent DELETING user credentials → intent: "delete_credentials"
-
-The intent describes the agent's action, not the subject matter of the data.
-
-Known governance categories:
-${vocabularyLines}
-
-Respond with ONLY a short intent label (1-4 words, snake_case). No explanation.`;
-
-  const dataSummary = Object.entries(inputData)
-    .filter(([, v]) => typeof v === 'string' && v.length > 0)
-    .map(([k, v]) => `${k}: ${(v as string).substring(0, 300)}`)
-    .join('\n')
-    .substring(0, 2000);
-
-  const userPrompt = `Stated intent: ${rawIntent}
-Tool: ${tool || 'none'}
-Input data:
-${dataSummary}`;
-
-  const raw = await callAIProvider(systemPrompt, userPrompt, config);
-  const classifiedIntent = raw.trim().toLowerCase().replace(/[^a-z0-9_ ]/g, '').replace(/\s+/g, '_');
-
-  return { classifiedIntent: classifiedIntent || rawIntent, raw };
-}
 
 // ─── World Cache ──────────────────────────────────────────────────────────────
 
@@ -428,95 +271,99 @@ export class NeuroVerseGuard implements INodeType {
       const world = worldCache.get(cacheKey)!.world;
 
       // ─── Parse args ───────────────────────────────────────────────
-      let parsedArgs: unknown = undefined;
+      let parsedArgs: Record<string, unknown> | undefined = undefined;
       if (additionalFields.args) {
         try {
           parsedArgs = JSON.parse(additionalFields.args);
         } catch {
-          parsedArgs = additionalFields.args;
+          parsedArgs = { raw: additionalFields.args };
+        }
+      }
+
+      // ─── Merge input data into args for content field extraction ─
+      const inputJson = items[i].json as Record<string, unknown>;
+      const mergedArgs: Record<string, unknown> = { ...parsedArgs };
+      for (const [key, value] of Object.entries(inputJson)) {
+        if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
+          if (!(key in mergedArgs)) {
+            mergedArgs[key] = value;
+          }
         }
       }
 
       // ─── Build guard event ──────────────────────────────────────
-      const inputJson = items[i].json as Record<string, unknown>;
-      let finalIntent: string;
-      let classificationUsed = false;
-      let classificationRaw = '';
+      const event: Record<string, unknown> = { intent };
+      if (tool) event.tool = tool;
+      if (additionalFields.irreversible) event.irreversible = true;
+      if (additionalFields.role) event.roleId = additionalFields.role;
+      if (Object.keys(mergedArgs).length > 0) event.args = mergedArgs;
+
+      // ─── Evaluate ───────────────────────────────────────────────
+      let verdict: GuardVerdict;
+      let intentSource: string = 'raw';
+      let classification: unknown = undefined;
+      let originalIntent: string | undefined = undefined;
 
       if (aiClassification) {
-        // ── AI-classified intent ──────────────────────────────────
-        // The LLM determines the TRUE intent of the action, separating
-        // "what the agent is doing" from "what the content says".
-        const aiProvider = this.getNodeParameter('aiProvider', i) as 'openai' | 'anthropic' | 'ollama';
+        // Use the governance package's evaluateGuardWithAI which:
+        //   1. Extracts content fields from event.args (separates who said what)
+        //   2. Classifies true intent via LLM
+        //   3. Runs evaluateGuard with the clean classified intent
+        //   4. Falls back to raw intent on AI failure
+        const aiProvider = this.getNodeParameter('aiProvider', i) as string;
         const aiModel = this.getNodeParameter('aiModel', i) as string;
         const aiApiKey = this.getNodeParameter('aiApiKey', i, '') as string;
         const aiEndpoint = this.getNodeParameter('aiEndpoint', i, '') as string;
 
-        try {
-          const result = await classifyIntentWithAI(
-            intent,
-            tool,
-            inputJson,
-            world,
-            { provider: aiProvider, model: aiModel, apiKey: aiApiKey, endpoint: aiEndpoint || undefined },
-          );
-          finalIntent = result.classifiedIntent;
-          classificationUsed = true;
-          classificationRaw = result.raw;
-        } catch (err: unknown) {
-          // AI classification failed — fall back to enriched intent
-          classificationRaw = `error: ${err instanceof Error ? err.message : String(err)}`;
-          finalIntent = intent;
-        }
+        // Pre-extract content fields from the merged args so the classifier
+        // can distinguish customer input from AI output
+        const contentFields = extractContentFields(intent, mergedArgs);
+
+        const aiVerdict = await evaluateGuardWithAI(
+          event as any,
+          world,
+          {
+            level: level as 'basic' | 'standard' | 'strict',
+            ai: {
+              provider: aiProvider,
+              model: aiModel,
+              apiKey: aiApiKey,
+              endpoint: aiEndpoint || null,
+            },
+            contentFields,
+            fallbackOnError: true,
+          },
+        );
+
+        verdict = aiVerdict;
+        intentSource = aiVerdict.intent_source;
+        classification = aiVerdict.classification;
+        originalIntent = aiVerdict.originalIntent;
       } else {
-        // ── Legacy enriched intent (no AI) ────────────────────────
-        // Concatenate all text from args and input fields into the intent
-        // string for regex matching.  This is the original behavior.
-        finalIntent = intent;
+        // Legacy path: enrich intent with all text content for regex matching
+        let enrichedIntent = intent;
 
         if (parsedArgs) {
-          const argsText = typeof parsedArgs === 'string'
-            ? parsedArgs
-            : typeof parsedArgs === 'object' && parsedArgs !== null
-              ? Object.values(parsedArgs as Record<string, unknown>)
-                  .filter((v) => typeof v === 'string')
-                  .join(' ')
-              : '';
+          const argsText = Object.values(parsedArgs)
+            .filter((v) => typeof v === 'string')
+            .join(' ');
           if (argsText) {
-            finalIntent = `${intent} ${argsText}`;
+            enrichedIntent = `${intent} ${argsText}`;
           }
         }
 
         for (const [, value] of Object.entries(inputJson)) {
           if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
             const sample = value.substring(0, 50);
-            if (!finalIntent.includes(sample)) {
-              finalIntent = `${finalIntent} ${value}`;
+            if (!enrichedIntent.includes(sample)) {
+              enrichedIntent = `${enrichedIntent} ${value}`;
             }
           }
         }
+
+        event.intent = enrichedIntent;
+        verdict = evaluateGuard(event as any, world, { level } as any);
       }
-
-      const event: Record<string, unknown> = { intent: finalIntent };
-      if (tool) event.tool = tool;
-      if (additionalFields.irreversible) event.irreversible = true;
-      if (additionalFields.role) event.role = additionalFields.role;
-      if (parsedArgs !== undefined) event.args = parsedArgs;
-
-      // When AI classification is active, pass the raw input as payload so the
-      // guard engine's safety checks (prompt injection, scope escape) still
-      // scan the full text — only the intent-pattern matching uses the clean label.
-      if (classificationUsed) {
-        const rawPayload = Object.entries(inputJson)
-          .filter(([, v]) => typeof v === 'string' && v.length > 0)
-          .map(([k, v]) => `${k}: ${v}`)
-          .join('\n')
-          .substring(0, 20000);
-        event.payload = rawPayload;
-      }
-
-      // ─── Evaluate ───────────────────────────────────────────────
-      const verdict: GuardVerdict = evaluateGuard(event as any, world, { level } as any);
 
       const outputItem: INodeExecutionData = {
         json: {
@@ -528,12 +375,15 @@ export class NeuroVerseGuard implements INodeType {
             evidence: verdict.evidence ?? null,
           },
           _debug: {
-            finalIntent: finalIntent.substring(0, 500),
-            aiClassification: classificationUsed
-              ? { used: true, raw: classificationRaw, classified: finalIntent }
-              : { used: false },
-            bodyFieldValue: typeof inputJson['body'] === 'string' ? inputJson['body'].substring(0, 100) : String(inputJson['body']),
-            stringFieldsScanned: Object.keys(inputJson).filter((k: string) => typeof inputJson[k] === 'string'),
+            intent: (event.intent as string).substring(0, 500),
+            intentSource,
+            ...(classification ? {
+              classification,
+              originalIntent,
+            } : {}),
+            stringFieldsScanned: Object.keys(inputJson).filter(
+              (k: string) => typeof inputJson[k] === 'string',
+            ),
           },
         },
       };

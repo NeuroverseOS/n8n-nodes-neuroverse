@@ -6,129 +6,6 @@ const governance_1 = require("@neuroverseos/governance");
 const fs_1 = require("fs");
 const path_1 = require("path");
 const os_1 = require("os");
-async function callAIProvider(systemPrompt, userPrompt, config) {
-    const { provider, model, apiKey, endpoint } = config;
-    if (provider === 'anthropic') {
-        const url = endpoint || 'https://api.anthropic.com/v1/messages';
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-            },
-            body: JSON.stringify({
-                model,
-                system: systemPrompt,
-                messages: [{ role: 'user', content: userPrompt }],
-                max_tokens: 60,
-                temperature: 0,
-            }),
-        });
-        if (!res.ok) {
-            throw new Error(`Anthropic API ${res.status}: ${await res.text()}`);
-        }
-        const data = (await res.json());
-        return data.content[0]?.text ?? '';
-    }
-    if (provider === 'ollama') {
-        const url = endpoint || 'http://localhost:11434';
-        const res = await fetch(`${url}/api/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model,
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt },
-                ],
-                stream: false,
-            }),
-        });
-        if (!res.ok) {
-            throw new Error(`Ollama API ${res.status}: ${await res.text()}`);
-        }
-        const data = (await res.json());
-        return data.message?.content ?? '';
-    }
-    // Default: OpenAI-compatible
-    const url = endpoint || 'https://api.openai.com/v1/chat/completions';
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-            model,
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt },
-            ],
-            max_tokens: 60,
-            temperature: 0,
-        }),
-    });
-    if (!res.ok) {
-        throw new Error(`OpenAI API ${res.status}: ${await res.text()}`);
-    }
-    const data = (await res.json());
-    return data.choices[0]?.message?.content ?? '';
-}
-/**
- * Classify the true intent of an action using an LLM.
- *
- * The classifier distinguishes between what the agent is DOING (the intent)
- * and what the content being processed SAYS.  For example, an agent replying
- * to a customer who mentioned "refund" has the intent "customer_reply", not
- * "refund_request".
- */
-async function classifyIntentWithAI(rawIntent, tool, inputData, world, config) {
-    // Extract guard labels from the world to give the classifier context
-    const guards = [];
-    try {
-        const worldGuards = world?.guards?.guards ??
-            world?.guards ??
-            [];
-        for (const g of worldGuards) {
-            if (g && g.id) {
-                guards.push({ id: g.id, label: g.label ?? g.id, description: g.description ?? '' });
-            }
-        }
-    }
-    catch { /* world may not expose guards */ }
-    const vocabularyLines = guards.length > 0
-        ? guards.map((g) => `- ${g.id}: ${g.label} — ${g.description}`).join('\n')
-        : '(no guard vocabulary available)';
-    const systemPrompt = `You are an intent classifier for a governance system.
-Given an action's context, determine the TRUE intent — what the agent is DOING,
-not what the text content mentions.
-
-Critical distinction:
-- Agent REPLYING to a customer who asked about a refund → intent: "customer_reply"
-- Agent ISSUING a refund → intent: "issue_refund"
-- Agent READING a file that mentions passwords → intent: "read_file"
-- Agent DELETING user credentials → intent: "delete_credentials"
-
-The intent describes the agent's action, not the subject matter of the data.
-
-Known governance categories:
-${vocabularyLines}
-
-Respond with ONLY a short intent label (1-4 words, snake_case). No explanation.`;
-    const dataSummary = Object.entries(inputData)
-        .filter(([, v]) => typeof v === 'string' && v.length > 0)
-        .map(([k, v]) => `${k}: ${v.substring(0, 300)}`)
-        .join('\n')
-        .substring(0, 2000);
-    const userPrompt = `Stated intent: ${rawIntent}
-Tool: ${tool || 'none'}
-Input data:
-${dataSummary}`;
-    const raw = await callAIProvider(systemPrompt, userPrompt, config);
-    const classifiedIntent = raw.trim().toLowerCase().replace(/[^a-z0-9_ ]/g, '').replace(/\s+/g, '_');
-    return { classifiedIntent: classifiedIntent || rawIntent, raw };
-}
 const worldCache = new Map();
 function getDirectoryMtime(dirPath) {
     try {
@@ -367,82 +244,85 @@ class NeuroVerseGuard {
                     parsedArgs = JSON.parse(additionalFields.args);
                 }
                 catch {
-                    parsedArgs = additionalFields.args;
+                    parsedArgs = { raw: additionalFields.args };
+                }
+            }
+            // ─── Merge input data into args for content field extraction ─
+            const inputJson = items[i].json;
+            const mergedArgs = { ...parsedArgs };
+            for (const [key, value] of Object.entries(inputJson)) {
+                if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
+                    if (!(key in mergedArgs)) {
+                        mergedArgs[key] = value;
+                    }
                 }
             }
             // ─── Build guard event ──────────────────────────────────────
-            const inputJson = items[i].json;
-            let finalIntent;
-            let classificationUsed = false;
-            let classificationRaw = '';
-            if (aiClassification) {
-                // ── AI-classified intent ──────────────────────────────────
-                // The LLM determines the TRUE intent of the action, separating
-                // "what the agent is doing" from "what the content says".
-                const aiProvider = this.getNodeParameter('aiProvider', i);
-                const aiModel = this.getNodeParameter('aiModel', i);
-                const aiApiKey = this.getNodeParameter('aiApiKey', i, '');
-                const aiEndpoint = this.getNodeParameter('aiEndpoint', i, '');
-                try {
-                    const result = await classifyIntentWithAI(intent, tool, inputJson, world, { provider: aiProvider, model: aiModel, apiKey: aiApiKey, endpoint: aiEndpoint || undefined });
-                    finalIntent = result.classifiedIntent;
-                    classificationUsed = true;
-                    classificationRaw = result.raw;
-                }
-                catch (err) {
-                    // AI classification failed — fall back to enriched intent
-                    classificationRaw = `error: ${err instanceof Error ? err.message : String(err)}`;
-                    finalIntent = intent;
-                }
-            }
-            else {
-                // ── Legacy enriched intent (no AI) ────────────────────────
-                // Concatenate all text from args and input fields into the intent
-                // string for regex matching.  This is the original behavior.
-                finalIntent = intent;
-                if (parsedArgs) {
-                    const argsText = typeof parsedArgs === 'string'
-                        ? parsedArgs
-                        : typeof parsedArgs === 'object' && parsedArgs !== null
-                            ? Object.values(parsedArgs)
-                                .filter((v) => typeof v === 'string')
-                                .join(' ')
-                            : '';
-                    if (argsText) {
-                        finalIntent = `${intent} ${argsText}`;
-                    }
-                }
-                for (const [, value] of Object.entries(inputJson)) {
-                    if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
-                        const sample = value.substring(0, 50);
-                        if (!finalIntent.includes(sample)) {
-                            finalIntent = `${finalIntent} ${value}`;
-                        }
-                    }
-                }
-            }
-            const event = { intent: finalIntent };
+            const event = { intent };
             if (tool)
                 event.tool = tool;
             if (additionalFields.irreversible)
                 event.irreversible = true;
             if (additionalFields.role)
-                event.role = additionalFields.role;
-            if (parsedArgs !== undefined)
-                event.args = parsedArgs;
-            // When AI classification is active, pass the raw input as payload so the
-            // guard engine's safety checks (prompt injection, scope escape) still
-            // scan the full text — only the intent-pattern matching uses the clean label.
-            if (classificationUsed) {
-                const rawPayload = Object.entries(inputJson)
-                    .filter(([, v]) => typeof v === 'string' && v.length > 0)
-                    .map(([k, v]) => `${k}: ${v}`)
-                    .join('\n')
-                    .substring(0, 20000);
-                event.payload = rawPayload;
-            }
+                event.roleId = additionalFields.role;
+            if (Object.keys(mergedArgs).length > 0)
+                event.args = mergedArgs;
             // ─── Evaluate ───────────────────────────────────────────────
-            const verdict = (0, governance_1.evaluateGuard)(event, world, { level });
+            let verdict;
+            let intentSource = 'raw';
+            let classification = undefined;
+            let originalIntent = undefined;
+            if (aiClassification) {
+                // Use the governance package's evaluateGuardWithAI which:
+                //   1. Extracts content fields from event.args (separates who said what)
+                //   2. Classifies true intent via LLM
+                //   3. Runs evaluateGuard with the clean classified intent
+                //   4. Falls back to raw intent on AI failure
+                const aiProvider = this.getNodeParameter('aiProvider', i);
+                const aiModel = this.getNodeParameter('aiModel', i);
+                const aiApiKey = this.getNodeParameter('aiApiKey', i, '');
+                const aiEndpoint = this.getNodeParameter('aiEndpoint', i, '');
+                // Pre-extract content fields from the merged args so the classifier
+                // can distinguish customer input from AI output
+                const contentFields = (0, governance_1.extractContentFields)(intent, mergedArgs);
+                const aiVerdict = await (0, governance_1.evaluateGuardWithAI)(event, world, {
+                    level: level,
+                    ai: {
+                        provider: aiProvider,
+                        model: aiModel,
+                        apiKey: aiApiKey,
+                        endpoint: aiEndpoint || null,
+                    },
+                    contentFields,
+                    fallbackOnError: true,
+                });
+                verdict = aiVerdict;
+                intentSource = aiVerdict.intent_source;
+                classification = aiVerdict.classification;
+                originalIntent = aiVerdict.originalIntent;
+            }
+            else {
+                // Legacy path: enrich intent with all text content for regex matching
+                let enrichedIntent = intent;
+                if (parsedArgs) {
+                    const argsText = Object.values(parsedArgs)
+                        .filter((v) => typeof v === 'string')
+                        .join(' ');
+                    if (argsText) {
+                        enrichedIntent = `${intent} ${argsText}`;
+                    }
+                }
+                for (const [, value] of Object.entries(inputJson)) {
+                    if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
+                        const sample = value.substring(0, 50);
+                        if (!enrichedIntent.includes(sample)) {
+                            enrichedIntent = `${enrichedIntent} ${value}`;
+                        }
+                    }
+                }
+                event.intent = enrichedIntent;
+                verdict = (0, governance_1.evaluateGuard)(event, world, { level });
+            }
             const outputItem = {
                 json: {
                     ...items[i].json,
@@ -453,11 +333,12 @@ class NeuroVerseGuard {
                         evidence: verdict.evidence ?? null,
                     },
                     _debug: {
-                        finalIntent: finalIntent.substring(0, 500),
-                        aiClassification: classificationUsed
-                            ? { used: true, raw: classificationRaw, classified: finalIntent }
-                            : { used: false },
-                        bodyFieldValue: typeof inputJson['body'] === 'string' ? inputJson['body'].substring(0, 100) : String(inputJson['body']),
+                        intent: event.intent.substring(0, 500),
+                        intentSource,
+                        ...(classification ? {
+                            classification,
+                            originalIntent,
+                        } : {}),
                         stringFieldsScanned: Object.keys(inputJson).filter((k) => typeof inputJson[k] === 'string'),
                     },
                 },
