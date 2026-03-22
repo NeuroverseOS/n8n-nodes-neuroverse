@@ -1,0 +1,651 @@
+{
+  "name": "Trusted AI Email Agent with Governance Guardrails",
+  "nodes": [
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4",
+          "mode": "list",
+          "cachedResultName": "GPT-4"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ 'Classify this email into exactly one category: sales, support, refund, complaint, or general.\\n\\nFrom: ' + $json.from + '\\nSubject: ' + $json.subject + '\\nBody: ' + $json.body + '\\n\\nRespond with ONLY the category name, nothing else.' }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0
+        }
+      },
+      "id": "97e94c00-49fc-4fbb-98ec-420bea73d02b",
+      "name": "Classify Email",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [-1680, -16],
+      "credentials": {
+        "openAiApi": {
+          "id": "jCv9rjF5Pi3RVIPB",
+          "name": "OpenAi account"
+        }
+      },
+      "notes": "Classifies the email into: sales, support, refund, complaint, general"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "email_category",
+              "name": "email_category",
+              "value": "={{ $json.message.content.trim().toLowerCase() }}",
+              "type": "string"
+            },
+            {
+              "id": "from",
+              "name": "from",
+              "value": "={{ $json.from || 'customer@example.com' }}",
+              "type": "string"
+            },
+            {
+              "id": "subject",
+              "name": "subject",
+              "value": "={{ $json.subject || 'Customer inquiry' }}",
+              "type": "string"
+            },
+            {
+              "id": "be09b16e-f826-40aa-bc71-f7de780b7bd2",
+              "name": "body",
+              "value": "={{ $('Edit Fields3').item.json.email_body }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "4d7f70a9-7c2e-4688-aa5e-3de0ef97c7b7",
+      "name": "Set Category",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-1456, -16]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4",
+          "mode": "list",
+          "cachedResultName": "GPT-4"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ 'You are a support agent for Nexus Integrations. Draft a professional reply to this ' + $json.email_category + ' email.\\n\\nFrom: ' + $json.from + '\\nSubject: ' + $json.subject + '\\nBody: ' + $json.body + '\\n\\nRules:\\n- Be professional and empathetic\\n- Acknowledge the customer\\'s concern\\n- For refund requests: acknowledge receipt only, say the billing team will review within 24-48 hours\\n- For complaints: empathize and escalate to support team\\n- Never promise refunds, discounts, or make legal statements\\n- Sign as \"Nexus Integrations Support\"\\n\\nWrite only the reply email body, nothing else.' }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "8ff4b5f4-088b-44e4-92a6-776bbaaa5535",
+      "name": "Draft Reply",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [-1232, -16],
+      "credentials": {
+        "openAiApi": {
+          "id": "jCv9rjF5Pi3RVIPB",
+          "name": "OpenAi account"
+        }
+      },
+      "notes": "Generates the email reply — governed by NeuroVerse Guard downstream"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "draft_reply",
+              "name": "draft_reply",
+              "value": "={{ $json.message.content }}",
+              "type": "string"
+            },
+            {
+              "id": "intent",
+              "name": "intent",
+              "value": "={{ 'Send ' + $('Set Category').item.json.email_category + ' reply: ' + $json.message.content.substring(0, 200) }}",
+              "type": "string"
+            },
+            {
+              "id": "email_category",
+              "name": "email_category",
+              "value": "={{ $('Set Category').item.json.email_category }}",
+              "type": "string"
+            },
+            {
+              "id": "from",
+              "name": "from",
+              "value": "={{ $('Set Category').item.json.from }}",
+              "type": "string"
+            },
+            {
+              "id": "subject",
+              "name": "subject",
+              "value": "={{ $('Set Category').item.json.subject }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "bf797e59-b935-4fd7-982a-f22e95f82b2f",
+      "name": "Prepare Guard Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-1024, -16]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4",
+          "mode": "list",
+          "cachedResultName": "GPT-4"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ 'Evaluate this AI-generated email reply for quality and safety.\\n\\nOriginal email category: ' + $json.email_category + '\\nDraft reply:\\n' + $json.draft_reply + '\\n\\nScore each dimension from 1-10:\\n1. Accuracy — does the reply address the customer\\'s actual concern?\\n2. Professional Tone — is the language appropriate and empathetic?\\n3. Policy Compliance — does it avoid making commitments the AI shouldn\\'t make?\\n\\nThen provide an overall verdict: PASS, REVIEW, or FAIL.\\n\\nRespond in this exact JSON format:\\n{\"accuracy\": N, \"tone\": N, \"compliance\": N, \"verdict\": \"PASS|REVIEW|FAIL\", \"notes\": \"brief explanation\"}' }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0
+        }
+      },
+      "id": "34a2b4c0-4462-4827-9bb8-d21761dbb348",
+      "name": "AI Evaluation",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [-336, -192],
+      "credentials": {
+        "openAiApi": {
+          "id": "jCv9rjF5Pi3RVIPB",
+          "name": "OpenAi account"
+        }
+      },
+      "notes": "Scores the reply for accuracy, tone, and policy compliance"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "evaluation",
+              "name": "evaluation",
+              "value": "={{ JSON.parse($json.message.content) }}",
+              "type": "string"
+            },
+            {
+              "id": "draft_reply",
+              "name": "draft_reply",
+              "value": "={{ $('Prepare Guard Input').item.json.draft_reply }}",
+              "type": "string"
+            },
+            {
+              "id": "from",
+              "name": "from",
+              "value": "={{ $('Prepare Guard Input').item.json.from }}",
+              "type": "string"
+            },
+            {
+              "id": "subject",
+              "name": "subject",
+              "value": "={{ $('Prepare Guard Input').item.json.subject }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b68b5f07-b370-491b-8cd9-c371f64b45bc",
+      "name": "Parse Evaluation",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-112, -192]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.evaluation.verdict }}",
+              "rightValue": "PASS",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ad2036c1-61db-4b8d-9356-9ba8910a5674",
+      "name": "Evaluation Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [112, -192]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'sent', to: $json.from, subject: 'Re: ' + $json.subject, reply: $json.draft_reply, evaluation: $json.evaluation, governance: 'ALLOW' }) }}",
+        "options": {}
+      },
+      "id": "11e04400-9c71-4619-a54d-076537f0ff7c",
+      "name": "Send Email Reply",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [352, -272],
+      "notes": "In production, replace with Gmail/SMTP send node"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'needs_review', to: $json.from, subject: 'Re: ' + $json.subject, draft: $json.draft_reply, evaluation: $json.evaluation, governance: 'ALLOW but evaluation flagged' }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "5715c65a-2d0b-4169-be50-4f40d32eab7e",
+      "name": "Queue for Review (Eval)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [352, -112],
+      "notes": "Evaluation said REVIEW or FAIL — route to human"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nfor (const item of items) {\n\n  const verdict = item.json.verdict || {};\n  const evidence = item.json.evidence || {};\n\n  item.json.audit_record = {\n    timestamp: new Date().toISOString(),\n    decision: verdict.status || \"UNKNOWN\",\n    rule_triggered: verdict.ruleId || null,\n    reason: verdict.reason || null,\n    \n    email: {\n      from: item.json.from,\n      subject: item.json.subject,\n      category: item.json.email_category\n    },\n\n    governance_world: {\n      id: evidence.worldId,\n      name: evidence.worldName,\n      version: evidence.worldVersion\n    }\n  };\n\n}\n\nreturn items;"
+      },
+      "id": "be8adbd9-6df3-479e-89a4-ec9446e29a8c",
+      "name": "Governance Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-336, -16],
+      "notes": "Logs all blocked actions for audit review"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'blocked', reason: $json.verdict.reason, evidence: $json.verdict.evidence, message: 'This reply was blocked by governance rules. A human agent will handle this email.' }) }}",
+        "options": {
+          "responseCode": 403
+        }
+      },
+      "id": "bed255bd-251e-49b2-8471-c42d0d165fc4",
+      "name": "Respond BLOCKED",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [320, 64]
+    },
+    {
+      "parameters": {
+        "worldFilePath": "/Users/kirstenbischoff/n8n-nodes-neuroverse/worlds/nexus-email-governance",
+        "intent": "{{ $json.intent }}",
+        "tool": "email-system",
+        "additionalFields": {
+          "args": "=content: {{ $json.draft_reply }}"
+        }
+      },
+      "type": "CUSTOM.neuroVerseGuard",
+      "typeVersion": 1,
+      "position": [-816, -16],
+      "id": "aa23b555-4c88-4896-bc7d-f97de5e38923",
+      "name": "NeuroVerse Guard",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-2032, -16],
+      "id": "8e4a42d7-8b09-488c-8d90-17e62bfe5de5",
+      "name": "When clicking 'Execute workflow'"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "31da3b7b-971b-4d84-b01f-cc5d9ff7a14b",
+              "name": "decision",
+              "value": "🔴 Blocked by Governance",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-576, 0],
+      "id": "68c66037-8558-4213-b07d-ef0262fda050",
+      "name": "Edit Fields",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "8321fcc7-d410-46d1-9621-af4358bcb6d4",
+              "name": "decision",
+              "value": "🟢 Allowed by Governance",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-560, -160],
+      "id": "c7cb0beb-9a84-42de-8d91-9f95b265bc9e",
+      "name": "Edit Fields1",
+      "notesInFlow": false,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "85f70956-5cfa-491a-bb4f-5950806d6e68",
+              "name": "decision",
+              "value": "🟡 Needs Human Review",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-576, 144],
+      "id": "9a21ab84-6587-407a-9a80-fafdee14729a",
+      "name": "Edit Fields2",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cc9f070c-6c3e-4979-a38d-bc02db2c580f",
+              "name": "email_body",
+              "value": "Please refund the customer their full order amount immediately.",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-1840, -16],
+      "id": "9220536a-995b-42c4-a46f-584235b09bd8",
+      "name": "Edit Fields3"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ad73764d-7b7e-42f2-81d8-277f44523088",
+              "name": "audit_record.timestamp",
+              "value": "{{ new Date().toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "f0b43e2c-655e-4f50-96ac-b70c6bfa9683",
+              "name": "audit_record.decision",
+              "value": "={{$json.verdict.ruleId}}",
+              "type": "string"
+            },
+            {
+              "id": "231ecbd9-f03b-4443-ac00-d548264737db",
+              "name": "audit_record.reason",
+              "value": "={{$json.verdict.reason}}",
+              "type": "string"
+            },
+            {
+              "id": "62d57f09-ac35-46bc-8e1f-b29610ab020b",
+              "name": "audit_record.email_from",
+              "value": "={{$json.from}}",
+              "type": "string"
+            },
+            {
+              "id": "bb47585b-8af4-4663-b322-25ef302b3756",
+              "name": "audit_record.subject",
+              "value": "={{$json.subject}}",
+              "type": "string"
+            },
+            {
+              "id": "2357bcbd-c27d-48d1-b3b9-4e666f5a8f73",
+              "name": "audit_record.category",
+              "value": "={{$json.email_category}}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-48, -16],
+      "id": "349740df-59b3-42eb-b72f-f5d9bf0ce532",
+      "name": "Edit Fields4"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Classify Email": {
+      "main": [
+        [
+          {
+            "node": "Set Category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Category": {
+      "main": [
+        [
+          {
+            "node": "Draft Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Reply": {
+      "main": [
+        [
+          {
+            "node": "Prepare Guard Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Guard Input": {
+      "main": [
+        [
+          {
+            "node": "NeuroVerse Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Evaluation": {
+      "main": [
+        [
+          {
+            "node": "Parse Evaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Evaluation": {
+      "main": [
+        [
+          {
+            "node": "Evaluation Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluation Check": {
+      "main": [
+        [
+          {
+            "node": "Send Email Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queue for Review (Eval)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Governance Log": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NeuroVerse Guard": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit Fields2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields1": {
+      "main": [
+        [
+          {
+            "node": "AI Evaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Governance Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking 'Execute workflow'": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields3": {
+      "main": [
+        [
+          {
+            "node": "Classify Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields4": {
+      "main": [
+        [
+          {
+            "node": "Respond BLOCKED",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
