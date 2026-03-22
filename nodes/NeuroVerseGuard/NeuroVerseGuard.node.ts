@@ -6,14 +6,19 @@ import {
   NodeConnectionTypes,
 } from 'n8n-workflow';
 
-import { loadWorld, evaluateGuard } from '@neuroverseos/governance';
+import {
+  loadWorld,
+  evaluateGuard,
+  evaluateGuardWithAI,
+  extractContentFields,
+} from '@neuroverseos/governance';
 import type { GuardVerdict } from '@neuroverseos/governance';
 import { writeFileSync, mkdtempSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-// Cache loaded worlds by key, with mtime tracking so file changes take effect
-// without restarting n8n.
+// ─── World Cache ──────────────────────────────────────────────────────────────
+
 interface CachedWorld {
   world: Awaited<ReturnType<typeof loadWorld>>;
   mtime: number;
@@ -22,30 +27,20 @@ const worldCache = new Map<string, CachedWorld>();
 
 function getDirectoryMtime(dirPath: string): number {
   try {
-    // Check the directory's own mtime (changes when files are added/removed)
     let latest = statSync(dirPath).mtimeMs;
-    // Also check guards.json specifically since it's the most commonly edited
-    try {
-      const guardsMtime = statSync(join(dirPath, 'guards.json')).mtimeMs;
-      if (guardsMtime > latest) latest = guardsMtime;
-    } catch { /* file may not exist */ }
-    try {
-      const worldMtime = statSync(join(dirPath, 'world.json')).mtimeMs;
-      if (worldMtime > latest) latest = worldMtime;
-    } catch { /* file may not exist */ }
-    try {
-      const invariantsMtime = statSync(join(dirPath, 'invariants.json')).mtimeMs;
-      if (invariantsMtime > latest) latest = invariantsMtime;
-    } catch { /* file may not exist */ }
-    try {
-      const kernelMtime = statSync(join(dirPath, 'kernel.json')).mtimeMs;
-      if (kernelMtime > latest) latest = kernelMtime;
-    } catch { /* file may not exist */ }
+    for (const file of ['guards.json', 'world.json', 'invariants.json', 'kernel.json']) {
+      try {
+        const mt = statSync(join(dirPath, file)).mtimeMs;
+        if (mt > latest) latest = mt;
+      } catch { /* file may not exist */ }
+    }
     return latest;
   } catch {
     return 0;
   }
 }
+
+// ─── Node ─────────────────────────────────────────────────────────────────────
 
 export class NeuroVerseGuard implements INodeType {
   description: INodeTypeDescription = {
@@ -56,7 +51,7 @@ export class NeuroVerseGuard implements INodeType {
     version: 1,
     subtitle: '={{$parameter["intent"]}}',
     description:
-      'Evaluate an AI agent action against a NeuroVerse governance world. Routes to ALLOW, BLOCK, or PAUSE. Deterministic, sub-millisecond, no LLM calls.',
+      'Evaluate an AI agent action against a NeuroVerse governance world. Routes to ALLOW, BLOCK, or PAUSE.',
     defaults: {
       name: 'NeuroVerse Guard',
     },
@@ -145,6 +140,56 @@ export class NeuroVerseGuard implements INodeType {
         default: 'standard',
         description: 'How strictly to enforce governance rules.',
       },
+      // ─── AI Intent Classification ─────────────────────────────────
+      {
+        displayName: 'AI Intent Classification',
+        name: 'aiClassification',
+        type: 'boolean' as const,
+        default: false,
+        description:
+          'Use an AI model to classify the true intent before guard evaluation. Prevents false positives when raw text (emails, documents) contains trigger words that do not reflect the agent\'s actual action.',
+      },
+      {
+        displayName: 'AI Provider',
+        name: 'aiProvider',
+        type: 'options' as const,
+        options: [
+          { name: 'OpenAI', value: 'openai' },
+          { name: 'Anthropic', value: 'anthropic' },
+          { name: 'Ollama (Local)', value: 'ollama' },
+        ],
+        default: 'openai',
+        description: 'Which AI provider to use for intent classification.',
+        displayOptions: { show: { aiClassification: [true] } },
+      },
+      {
+        displayName: 'AI Model',
+        name: 'aiModel',
+        type: 'string' as const,
+        default: 'gpt-4.1-mini',
+        placeholder: 'gpt-4.1-mini',
+        description: 'Model ID for intent classification. Use a fast, cheap model — this is a single short classification call.',
+        displayOptions: { show: { aiClassification: [true] } },
+      },
+      {
+        displayName: 'AI API Key',
+        name: 'aiApiKey',
+        type: 'string' as const,
+        typeOptions: { password: true },
+        default: '',
+        description: 'API key for the AI provider. Not required for Ollama.',
+        displayOptions: { show: { aiClassification: [true] } },
+      },
+      {
+        displayName: 'AI Endpoint (Override)',
+        name: 'aiEndpoint',
+        type: 'string' as const,
+        default: '',
+        placeholder: 'http://localhost:11434',
+        description: 'Custom API endpoint. Required for Ollama, optional for OpenAI/Anthropic.',
+        displayOptions: { show: { aiClassification: [true] } },
+      },
+      // ─── Additional Fields ────────────────────────────────────────
       {
         displayName: 'Additional Fields',
         name: 'additionalFields',
@@ -191,6 +236,7 @@ export class NeuroVerseGuard implements INodeType {
       const intent = this.getNodeParameter('intent', i) as string;
       const tool = this.getNodeParameter('tool', i) as string;
       const level = this.getNodeParameter('level', i) as string;
+      const aiClassification = this.getNodeParameter('aiClassification', i, false) as boolean;
       const additionalFields = this.getNodeParameter('additionalFields', i) as {
         irreversible?: boolean;
         role?: string;
@@ -205,7 +251,6 @@ export class NeuroVerseGuard implements INodeType {
         cacheKey = `base64:${base64.substring(0, 64)}:${base64.length}`;
 
         if (!worldCache.has(cacheKey)) {
-          // Write to temp file then load (supports both current and future governance versions)
           const tmp = mkdtempSync(join(tmpdir(), 'nv-guard-'));
           const tmpZip = join(tmp, 'world.nv-world.zip');
           writeFileSync(tmpZip, Buffer.from(base64, 'base64'));
@@ -225,54 +270,100 @@ export class NeuroVerseGuard implements INodeType {
 
       const world = worldCache.get(cacheKey)!.world;
 
-      // ─── Build guard event ──────────────────────────────────────
-      // The governance engine matches patterns against intent + tool + scope.
-      // To ensure guards also catch violations in args/content (e.g. refund
-      // language in a draft_reply), we enrich the intent with content from
-      // both the args parameter AND the input item's JSON data.
-      let enrichedIntent = intent;
-      let parsedArgs: unknown = undefined;
+      // ─── Parse args ───────────────────────────────────────────────
+      let parsedArgs: Record<string, unknown> | undefined = undefined;
       if (additionalFields.args) {
         try {
           parsedArgs = JSON.parse(additionalFields.args);
         } catch {
-          parsedArgs = additionalFields.args;
-        }
-        // Extract text content from args for pattern scanning
-        const argsText = typeof parsedArgs === 'string'
-          ? parsedArgs
-          : typeof parsedArgs === 'object' && parsedArgs !== null
-            ? Object.values(parsedArgs as Record<string, unknown>)
-                .filter((v) => typeof v === 'string')
-                .join(' ')
-            : '';
-        if (argsText) {
-          enrichedIntent = `${intent} ${argsText}`;
+          parsedArgs = { raw: additionalFields.args };
         }
       }
 
-      // Scan ALL string fields from the input data for safety pattern matching.
-      // This ensures the guard catches prompt injection, refund language, etc.
-      // regardless of which field name carries the attacker-controlled text.
+      // ─── Merge input data into args for content field extraction ─
       const inputJson = items[i].json as Record<string, unknown>;
-      for (const [, value] of Object.entries(inputJson)) {
+      const mergedArgs: Record<string, unknown> = { ...parsedArgs };
+      for (const [key, value] of Object.entries(inputJson)) {
         if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
-          // Only append if not already substantially present in the enriched intent
-          const sample = value.substring(0, 50);
-          if (!enrichedIntent.includes(sample)) {
-            enrichedIntent = `${enrichedIntent} ${value}`;
+          if (!(key in mergedArgs)) {
+            mergedArgs[key] = value;
           }
         }
       }
 
-      const event: Record<string, unknown> = { intent: enrichedIntent };
+      // ─── Build guard event ──────────────────────────────────────
+      const event: Record<string, unknown> = { intent };
       if (tool) event.tool = tool;
       if (additionalFields.irreversible) event.irreversible = true;
-      if (additionalFields.role) event.role = additionalFields.role;
-      if (parsedArgs !== undefined) event.args = parsedArgs;
+      if (additionalFields.role) event.roleId = additionalFields.role;
+      if (Object.keys(mergedArgs).length > 0) event.args = mergedArgs;
 
       // ─── Evaluate ───────────────────────────────────────────────
-      const verdict: GuardVerdict = evaluateGuard(event as any, world, { level } as any);
+      let verdict: GuardVerdict;
+      let intentSource: string = 'raw';
+      let classification: unknown = undefined;
+      let originalIntent: string | undefined = undefined;
+
+      if (aiClassification) {
+        // Use the governance package's evaluateGuardWithAI which:
+        //   1. Extracts content fields from event.args (separates who said what)
+        //   2. Classifies true intent via LLM
+        //   3. Runs evaluateGuard with the clean classified intent
+        //   4. Falls back to raw intent on AI failure
+        const aiProvider = this.getNodeParameter('aiProvider', i) as string;
+        const aiModel = this.getNodeParameter('aiModel', i) as string;
+        const aiApiKey = this.getNodeParameter('aiApiKey', i, '') as string;
+        const aiEndpoint = this.getNodeParameter('aiEndpoint', i, '') as string;
+
+        // Pre-extract content fields from the merged args so the classifier
+        // can distinguish customer input from AI output
+        const contentFields = extractContentFields(intent, mergedArgs);
+
+        const aiVerdict = await evaluateGuardWithAI(
+          event as any,
+          world,
+          {
+            level: level as 'basic' | 'standard' | 'strict',
+            ai: {
+              provider: aiProvider,
+              model: aiModel,
+              apiKey: aiApiKey,
+              endpoint: aiEndpoint || null,
+            },
+            contentFields,
+            fallbackOnError: true,
+          },
+        );
+
+        verdict = aiVerdict;
+        intentSource = aiVerdict.intent_source;
+        classification = aiVerdict.classification;
+        originalIntent = aiVerdict.originalIntent;
+      } else {
+        // Legacy path: enrich intent with all text content for regex matching
+        let enrichedIntent = intent;
+
+        if (parsedArgs) {
+          const argsText = Object.values(parsedArgs)
+            .filter((v) => typeof v === 'string')
+            .join(' ');
+          if (argsText) {
+            enrichedIntent = `${intent} ${argsText}`;
+          }
+        }
+
+        for (const [, value] of Object.entries(inputJson)) {
+          if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
+            const sample = value.substring(0, 50);
+            if (!enrichedIntent.includes(sample)) {
+              enrichedIntent = `${enrichedIntent} ${value}`;
+            }
+          }
+        }
+
+        event.intent = enrichedIntent;
+        verdict = evaluateGuard(event as any, world, { level } as any);
+      }
 
       const outputItem: INodeExecutionData = {
         json: {
@@ -284,9 +375,15 @@ export class NeuroVerseGuard implements INodeType {
             evidence: verdict.evidence ?? null,
           },
           _debug: {
-            enrichedIntent: enrichedIntent.substring(0, 500),
-            bodyFieldValue: typeof inputJson['body'] === 'string' ? inputJson['body'].substring(0, 100) : String(inputJson['body']),
-            stringFieldsScanned: Object.keys(inputJson).filter((k: string) => typeof inputJson[k] === 'string'),
+            intent: (event.intent as string).substring(0, 500),
+            intentSource,
+            ...(classification ? {
+              classification,
+              originalIntent,
+            } : {}),
+            stringFieldsScanned: Object.keys(inputJson).filter(
+              (k: string) => typeof inputJson[k] === 'string',
+            ),
           },
         },
       };

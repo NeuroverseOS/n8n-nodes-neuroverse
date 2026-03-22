@@ -9,39 +9,22 @@ const os_1 = require("os");
 const worldCache = new Map();
 function getDirectoryMtime(dirPath) {
     try {
-        // Check the directory's own mtime (changes when files are added/removed)
         let latest = (0, fs_1.statSync)(dirPath).mtimeMs;
-        // Also check guards.json specifically since it's the most commonly edited
-        try {
-            const guardsMtime = (0, fs_1.statSync)((0, path_1.join)(dirPath, 'guards.json')).mtimeMs;
-            if (guardsMtime > latest)
-                latest = guardsMtime;
+        for (const file of ['guards.json', 'world.json', 'invariants.json', 'kernel.json']) {
+            try {
+                const mt = (0, fs_1.statSync)((0, path_1.join)(dirPath, file)).mtimeMs;
+                if (mt > latest)
+                    latest = mt;
+            }
+            catch { /* file may not exist */ }
         }
-        catch { /* file may not exist */ }
-        try {
-            const worldMtime = (0, fs_1.statSync)((0, path_1.join)(dirPath, 'world.json')).mtimeMs;
-            if (worldMtime > latest)
-                latest = worldMtime;
-        }
-        catch { /* file may not exist */ }
-        try {
-            const invariantsMtime = (0, fs_1.statSync)((0, path_1.join)(dirPath, 'invariants.json')).mtimeMs;
-            if (invariantsMtime > latest)
-                latest = invariantsMtime;
-        }
-        catch { /* file may not exist */ }
-        try {
-            const kernelMtime = (0, fs_1.statSync)((0, path_1.join)(dirPath, 'kernel.json')).mtimeMs;
-            if (kernelMtime > latest)
-                latest = kernelMtime;
-        }
-        catch { /* file may not exist */ }
         return latest;
     }
     catch {
         return 0;
     }
 }
+// ─── Node ─────────────────────────────────────────────────────────────────────
 class NeuroVerseGuard {
     description = {
         displayName: 'NeuroVerse Guard',
@@ -50,7 +33,7 @@ class NeuroVerseGuard {
         group: ['transform'],
         version: 1,
         subtitle: '={{$parameter["intent"]}}',
-        description: 'Evaluate an AI agent action against a NeuroVerse governance world. Routes to ALLOW, BLOCK, or PAUSE. Deterministic, sub-millisecond, no LLM calls.',
+        description: 'Evaluate an AI agent action against a NeuroVerse governance world. Routes to ALLOW, BLOCK, or PAUSE.',
         defaults: {
             name: 'NeuroVerse Guard',
         },
@@ -137,6 +120,55 @@ class NeuroVerseGuard {
                 default: 'standard',
                 description: 'How strictly to enforce governance rules.',
             },
+            // ─── AI Intent Classification ─────────────────────────────────
+            {
+                displayName: 'AI Intent Classification',
+                name: 'aiClassification',
+                type: 'boolean',
+                default: false,
+                description: 'Use an AI model to classify the true intent before guard evaluation. Prevents false positives when raw text (emails, documents) contains trigger words that do not reflect the agent\'s actual action.',
+            },
+            {
+                displayName: 'AI Provider',
+                name: 'aiProvider',
+                type: 'options',
+                options: [
+                    { name: 'OpenAI', value: 'openai' },
+                    { name: 'Anthropic', value: 'anthropic' },
+                    { name: 'Ollama (Local)', value: 'ollama' },
+                ],
+                default: 'openai',
+                description: 'Which AI provider to use for intent classification.',
+                displayOptions: { show: { aiClassification: [true] } },
+            },
+            {
+                displayName: 'AI Model',
+                name: 'aiModel',
+                type: 'string',
+                default: 'gpt-4.1-mini',
+                placeholder: 'gpt-4.1-mini',
+                description: 'Model ID for intent classification. Use a fast, cheap model — this is a single short classification call.',
+                displayOptions: { show: { aiClassification: [true] } },
+            },
+            {
+                displayName: 'AI API Key',
+                name: 'aiApiKey',
+                type: 'string',
+                typeOptions: { password: true },
+                default: '',
+                description: 'API key for the AI provider. Not required for Ollama.',
+                displayOptions: { show: { aiClassification: [true] } },
+            },
+            {
+                displayName: 'AI Endpoint (Override)',
+                name: 'aiEndpoint',
+                type: 'string',
+                default: '',
+                placeholder: 'http://localhost:11434',
+                description: 'Custom API endpoint. Required for Ollama, optional for OpenAI/Anthropic.',
+                displayOptions: { show: { aiClassification: [true] } },
+            },
+            // ─── Additional Fields ────────────────────────────────────────
             {
                 displayName: 'Additional Fields',
                 name: 'additionalFields',
@@ -180,6 +212,7 @@ class NeuroVerseGuard {
             const intent = this.getNodeParameter('intent', i);
             const tool = this.getNodeParameter('tool', i);
             const level = this.getNodeParameter('level', i);
+            const aiClassification = this.getNodeParameter('aiClassification', i, false);
             const additionalFields = this.getNodeParameter('additionalFields', i);
             // ─── Load world ─────────────────────────────────────────────
             let cacheKey;
@@ -187,7 +220,6 @@ class NeuroVerseGuard {
                 const base64 = this.getNodeParameter('worldFileBase64', i);
                 cacheKey = `base64:${base64.substring(0, 64)}:${base64.length}`;
                 if (!worldCache.has(cacheKey)) {
-                    // Write to temp file then load (supports both current and future governance versions)
                     const tmp = (0, fs_1.mkdtempSync)((0, path_1.join)((0, os_1.tmpdir)(), 'nv-guard-'));
                     const tmpZip = (0, path_1.join)(tmp, 'world.nv-world.zip');
                     (0, fs_1.writeFileSync)(tmpZip, Buffer.from(base64, 'base64'));
@@ -205,56 +237,92 @@ class NeuroVerseGuard {
                 }
             }
             const world = worldCache.get(cacheKey).world;
-            // ─── Build guard event ──────────────────────────────────────
-            // The governance engine matches patterns against intent + tool + scope.
-            // To ensure guards also catch violations in args/content (e.g. refund
-            // language in a draft_reply), we enrich the intent with content from
-            // both the args parameter AND the input item's JSON data.
-            let enrichedIntent = intent;
+            // ─── Parse args ───────────────────────────────────────────────
             let parsedArgs = undefined;
             if (additionalFields.args) {
                 try {
                     parsedArgs = JSON.parse(additionalFields.args);
                 }
                 catch {
-                    parsedArgs = additionalFields.args;
-                }
-                // Extract text content from args for pattern scanning
-                const argsText = typeof parsedArgs === 'string'
-                    ? parsedArgs
-                    : typeof parsedArgs === 'object' && parsedArgs !== null
-                        ? Object.values(parsedArgs)
-                            .filter((v) => typeof v === 'string')
-                            .join(' ')
-                        : '';
-                if (argsText) {
-                    enrichedIntent = `${intent} ${argsText}`;
+                    parsedArgs = { raw: additionalFields.args };
                 }
             }
-            // Scan ALL string fields from the input data for safety pattern matching.
-            // This ensures the guard catches prompt injection, refund language, etc.
-            // regardless of which field name carries the attacker-controlled text.
+            // ─── Merge input data into args for content field extraction ─
             const inputJson = items[i].json;
-            for (const [, value] of Object.entries(inputJson)) {
+            const mergedArgs = { ...parsedArgs };
+            for (const [key, value] of Object.entries(inputJson)) {
                 if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
-                    // Only append if not already substantially present in the enriched intent
-                    const sample = value.substring(0, 50);
-                    if (!enrichedIntent.includes(sample)) {
-                        enrichedIntent = `${enrichedIntent} ${value}`;
+                    if (!(key in mergedArgs)) {
+                        mergedArgs[key] = value;
                     }
                 }
             }
-            const event = { intent: enrichedIntent };
+            // ─── Build guard event ──────────────────────────────────────
+            const event = { intent };
             if (tool)
                 event.tool = tool;
             if (additionalFields.irreversible)
                 event.irreversible = true;
             if (additionalFields.role)
-                event.role = additionalFields.role;
-            if (parsedArgs !== undefined)
-                event.args = parsedArgs;
+                event.roleId = additionalFields.role;
+            if (Object.keys(mergedArgs).length > 0)
+                event.args = mergedArgs;
             // ─── Evaluate ───────────────────────────────────────────────
-            const verdict = (0, governance_1.evaluateGuard)(event, world, { level });
+            let verdict;
+            let intentSource = 'raw';
+            let classification = undefined;
+            let originalIntent = undefined;
+            if (aiClassification) {
+                // Use the governance package's evaluateGuardWithAI which:
+                //   1. Extracts content fields from event.args (separates who said what)
+                //   2. Classifies true intent via LLM
+                //   3. Runs evaluateGuard with the clean classified intent
+                //   4. Falls back to raw intent on AI failure
+                const aiProvider = this.getNodeParameter('aiProvider', i);
+                const aiModel = this.getNodeParameter('aiModel', i);
+                const aiApiKey = this.getNodeParameter('aiApiKey', i, '');
+                const aiEndpoint = this.getNodeParameter('aiEndpoint', i, '');
+                // Pre-extract content fields from the merged args so the classifier
+                // can distinguish customer input from AI output
+                const contentFields = (0, governance_1.extractContentFields)(intent, mergedArgs);
+                const aiVerdict = await (0, governance_1.evaluateGuardWithAI)(event, world, {
+                    level: level,
+                    ai: {
+                        provider: aiProvider,
+                        model: aiModel,
+                        apiKey: aiApiKey,
+                        endpoint: aiEndpoint || null,
+                    },
+                    contentFields,
+                    fallbackOnError: true,
+                });
+                verdict = aiVerdict;
+                intentSource = aiVerdict.intent_source;
+                classification = aiVerdict.classification;
+                originalIntent = aiVerdict.originalIntent;
+            }
+            else {
+                // Legacy path: enrich intent with all text content for regex matching
+                let enrichedIntent = intent;
+                if (parsedArgs) {
+                    const argsText = Object.values(parsedArgs)
+                        .filter((v) => typeof v === 'string')
+                        .join(' ');
+                    if (argsText) {
+                        enrichedIntent = `${intent} ${argsText}`;
+                    }
+                }
+                for (const [, value] of Object.entries(inputJson)) {
+                    if (typeof value === 'string' && value.length > 0 && value.length < 10000) {
+                        const sample = value.substring(0, 50);
+                        if (!enrichedIntent.includes(sample)) {
+                            enrichedIntent = `${enrichedIntent} ${value}`;
+                        }
+                    }
+                }
+                event.intent = enrichedIntent;
+                verdict = (0, governance_1.evaluateGuard)(event, world, { level });
+            }
             const outputItem = {
                 json: {
                     ...items[i].json,
@@ -265,8 +333,12 @@ class NeuroVerseGuard {
                         evidence: verdict.evidence ?? null,
                     },
                     _debug: {
-                        enrichedIntent: enrichedIntent.substring(0, 500),
-                        bodyFieldValue: typeof inputJson['body'] === 'string' ? inputJson['body'].substring(0, 100) : String(inputJson['body']),
+                        intent: event.intent.substring(0, 500),
+                        intentSource,
+                        ...(classification ? {
+                            classification,
+                            originalIntent,
+                        } : {}),
                         stringFieldsScanned: Object.keys(inputJson).filter((k) => typeof inputJson[k] === 'string'),
                     },
                 },
