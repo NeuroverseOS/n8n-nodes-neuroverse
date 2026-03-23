@@ -137,11 +137,26 @@ The example accepts a POST request with `intent` and `tool`, runs it through the
 
 ## Using Your Own World File
 
-The bundled worlds are great for getting started, but most teams will want to create their own governance rules. To use a custom world:
+The bundled worlds are great for getting started, but most teams will want to create their own governance rules.
+
+### Option A: Custom Directory (recommended)
+
+Keep all your worlds in one folder and pick from a dropdown — just like bundled worlds:
 
 1. **Build your world** at **[neuroverseos.com](https://neuroverseos.com)** — upload your docs or start from a template
-2. Download the `.nv-world.zip` file
-3. In the node, set **World Source** to **File Path** and point to your zip file or extracted directory — or use **Base64** for Docker/cloud environments where file paths are unavailable
+2. Extract the `.nv-world.zip` into a folder, e.g. `/data/my-worlds/acme-policy/`
+3. In the node, set **World Source** → **Custom Directory**
+4. Set **Custom Worlds Directory** to `/data/my-worlds`
+5. Your worlds appear in the **Custom World** dropdown — click the refresh icon after adding new ones
+
+You can have as many worlds as you want in one directory. Each subfolder is a world.
+
+### Option B: File Path / Base64
+
+For single-world setups or Docker/cloud environments:
+
+- **File Path** — point directly to a `.nv-world.zip` or extracted directory
+- **Base64** — pass the zip as a base64 string from another node or API
 
 A world file contains your governance rules: invariants that must always hold, guards that intercept specific actions, roles with permissions, and kernel rules for system-level constraints.
 

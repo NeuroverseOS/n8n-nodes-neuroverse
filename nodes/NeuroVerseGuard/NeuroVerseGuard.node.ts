@@ -1,6 +1,8 @@
 import {
   IExecuteFunctions,
+  ILoadOptionsFunctions,
   INodeExecutionData,
+  INodePropertyOptions,
   INodeType,
   INodeTypeDescription,
   NodeConnectionTypes,
@@ -24,6 +26,19 @@ const BUNDLED_WORLDS_DIR = resolve(__dirname, '..', '..', '..', 'worlds');
 function getBundledWorldChoices(): Array<{ name: string; value: string }> {
   try {
     return readdirSync(BUNDLED_WORLDS_DIR, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => ({
+        name: d.name.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+        value: d.name,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function scanDirectoryForWorlds(dirPath: string): Array<{ name: string; value: string }> {
+  try {
+    return readdirSync(dirPath, { withFileTypes: true })
       .filter((d) => d.isDirectory())
       .map((d) => ({
         name: d.name.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
@@ -283,6 +298,11 @@ export class NeuroVerseGuard implements INodeType {
             description: 'Use a world that ships with this package — zero setup required',
           },
           {
+            name: 'Custom Directory',
+            value: 'customDir',
+            description: 'Scan a folder of your own worlds and pick one from a dropdown',
+          },
+          {
             name: 'File Path',
             value: 'filePath',
             description: 'Load from a .nv-world.zip file or directory on disk',
@@ -306,6 +326,37 @@ export class NeuroVerseGuard implements INodeType {
         displayOptions: {
           show: {
             worldSource: ['bundled'],
+          },
+        },
+      },
+      {
+        displayName: 'Custom Worlds Directory',
+        name: 'customWorldsDir',
+        type: 'string' as const,
+        default: '',
+        required: true,
+        placeholder: '/data/my-worlds',
+        description:
+          'Path to a folder containing your world directories. Each subfolder is treated as a world.',
+        displayOptions: {
+          show: {
+            worldSource: ['customDir'],
+          },
+        },
+      },
+      {
+        displayName: 'Custom World',
+        name: 'customWorld',
+        type: 'options' as const,
+        typeOptions: {
+          loadOptionsMethod: 'getCustomWorldChoices',
+          loadOptionsDependsOn: ['customWorldsDir'],
+        },
+        default: '',
+        description: 'Select a world from your custom directory. Set the directory path above first, then click the refresh button.',
+        displayOptions: {
+          show: {
+            worldSource: ['customDir'],
           },
         },
       },
@@ -463,6 +514,22 @@ export class NeuroVerseGuard implements INodeType {
     ],
   };
 
+  methods = {
+    loadOptions: {
+      async getCustomWorldChoices(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+        const customDir = this.getNodeParameter('customWorldsDir', '') as string;
+        if (!customDir) {
+          return [{ name: '(Set directory path above first)', value: '' }];
+        }
+        const worlds = scanDirectoryForWorlds(customDir);
+        if (worlds.length === 0) {
+          return [{ name: '(No worlds found in directory)', value: '' }];
+        }
+        return worlds;
+      },
+    },
+  };
+
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
     const items = this.getInputData();
 
@@ -490,6 +557,18 @@ export class NeuroVerseGuard implements INodeType {
         const worldName = this.getNodeParameter('bundledWorld', i) as string;
         cacheKey = `bundled:${worldName}`;
         const worldDir = join(BUNDLED_WORLDS_DIR, worldName);
+        const currentMtime = getDirectoryMtime(worldDir);
+        const cached = worldCache.get(cacheKey);
+
+        if (!cached || cached.mtime < currentMtime) {
+          const world = await loadWorld(worldDir);
+          worldCache.set(cacheKey, { world, mtime: currentMtime });
+        }
+      } else if (worldSource === 'customDir') {
+        const customDir = this.getNodeParameter('customWorldsDir', i) as string;
+        const worldName = this.getNodeParameter('customWorld', i) as string;
+        const worldDir = join(customDir, worldName);
+        cacheKey = `custom:${worldDir}`;
         const currentMtime = getDirectoryMtime(worldDir);
         const cached = worldCache.get(cacheKey);
 
