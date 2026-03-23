@@ -8,9 +8,26 @@ import {
 
 import { loadWorld, simulateWorld } from '@neuroverseos/governance';
 import type { SimulationResult } from '@neuroverseos/governance';
-import { writeFileSync, mkdtempSync, statSync } from 'fs';
-import { join } from 'path';
+import { writeFileSync, mkdtempSync, statSync, readdirSync } from 'fs';
+import { join, resolve } from 'path';
 import { tmpdir } from 'os';
+
+// ─── Bundled Worlds ──────────────────────────────────────────────────────────
+
+const BUNDLED_WORLDS_DIR = resolve(__dirname, '..', '..', '..', 'worlds');
+
+function getBundledWorldChoices(): Array<{ name: string; value: string }> {
+  try {
+    return readdirSync(BUNDLED_WORLDS_DIR, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => ({
+        name: d.name.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+        value: d.name,
+      }));
+  } catch {
+    return [];
+  }
+}
 
 // ─── World Cache (shared pattern with Guard node) ────────────────────────────
 
@@ -80,6 +97,11 @@ export class NeuroVerseSimulate implements INodeType {
         type: 'options' as const,
         options: [
           {
+            name: 'Bundled',
+            value: 'bundled',
+            description: 'Use a world that ships with this package — zero setup required',
+          },
+          {
             name: 'File Path',
             value: 'filePath',
             description: 'Load from a .nv-world.zip file or directory on disk',
@@ -90,8 +112,21 @@ export class NeuroVerseSimulate implements INodeType {
             description: 'Load from a base64-encoded .nv-world.zip (from another node or API)',
           },
         ],
-        default: 'filePath',
+        default: 'bundled',
         description: 'How to load the governance world file.',
+      },
+      {
+        displayName: 'Bundled World',
+        name: 'bundledWorld',
+        type: 'options' as const,
+        options: getBundledWorldChoices(),
+        default: getBundledWorldChoices()[0]?.value ?? '',
+        description: 'Select a governance world included with this package.',
+        displayOptions: {
+          show: {
+            worldSource: ['bundled'],
+          },
+        },
       },
       {
         displayName: 'World File Path',
@@ -179,7 +214,18 @@ export class NeuroVerseSimulate implements INodeType {
       // ─── Load world ─────────────────────────────────────────────
       let cacheKey: string;
 
-      if (worldSource === 'base64') {
+      if (worldSource === 'bundled') {
+        const worldName = this.getNodeParameter('bundledWorld', i) as string;
+        cacheKey = `bundled:${worldName}`;
+        const worldDir = join(BUNDLED_WORLDS_DIR, worldName);
+        const currentMtime = getDirectoryMtime(worldDir);
+        const cached = worldCache.get(cacheKey);
+
+        if (!cached || cached.mtime < currentMtime) {
+          const world = await loadWorld(worldDir);
+          worldCache.set(cacheKey, { world, mtime: currentMtime });
+        }
+      } else if (worldSource === 'base64') {
         const base64 = this.getNodeParameter('worldFileBase64', i) as string;
         cacheKey = `base64:${base64.substring(0, 64)}:${base64.length}`;
 
