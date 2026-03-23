@@ -6,6 +6,21 @@ const governance_1 = require("@neuroverseos/governance");
 const fs_1 = require("fs");
 const path_1 = require("path");
 const os_1 = require("os");
+// ─── Bundled Worlds ──────────────────────────────────────────────────────────
+const BUNDLED_WORLDS_DIR = (0, path_1.resolve)(__dirname, '..', '..', '..', 'worlds');
+function getBundledWorldChoices() {
+    try {
+        return (0, fs_1.readdirSync)(BUNDLED_WORLDS_DIR, { withFileTypes: true })
+            .filter((d) => d.isDirectory())
+            .map((d) => ({
+            name: d.name.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+            value: d.name,
+        }));
+    }
+    catch {
+        return [];
+    }
+}
 // ─── Field Name Normalization (Fix 3) ─────────────────────────────────────────
 // extractContentFields recognizes specific key names. Real-world workflows use
 // many synonyms.  Normalize before passing to the governance function.
@@ -230,6 +245,11 @@ class NeuroVerseGuard {
                 type: 'options',
                 options: [
                     {
+                        name: 'Bundled',
+                        value: 'bundled',
+                        description: 'Use a world that ships with this package — zero setup required',
+                    },
+                    {
                         name: 'File Path',
                         value: 'filePath',
                         description: 'Load from a .nv-world.zip file or directory on disk',
@@ -240,8 +260,21 @@ class NeuroVerseGuard {
                         description: 'Load from a base64-encoded .nv-world.zip (from another node or API)',
                     },
                 ],
-                default: 'filePath',
+                default: 'bundled',
                 description: 'How to load the governance world file.',
+            },
+            {
+                displayName: 'Bundled World',
+                name: 'bundledWorld',
+                type: 'options',
+                options: getBundledWorldChoices(),
+                default: getBundledWorldChoices()[0]?.value ?? '',
+                description: 'Select a governance world included with this package.',
+                displayOptions: {
+                    show: {
+                        worldSource: ['bundled'],
+                    },
+                },
             },
             {
                 displayName: 'World File Path',
@@ -407,7 +440,18 @@ class NeuroVerseGuard {
             const additionalFields = this.getNodeParameter('additionalFields', i);
             // ─── Load world ─────────────────────────────────────────────
             let cacheKey;
-            if (worldSource === 'base64') {
+            if (worldSource === 'bundled') {
+                const worldName = this.getNodeParameter('bundledWorld', i);
+                cacheKey = `bundled:${worldName}`;
+                const worldDir = (0, path_1.join)(BUNDLED_WORLDS_DIR, worldName);
+                const currentMtime = getDirectoryMtime(worldDir);
+                const cached = worldCache.get(cacheKey);
+                if (!cached || cached.mtime < currentMtime) {
+                    const world = await (0, governance_1.loadWorld)(worldDir);
+                    worldCache.set(cacheKey, { world, mtime: currentMtime });
+                }
+            }
+            else if (worldSource === 'base64') {
                 const base64 = this.getNodeParameter('worldFileBase64', i);
                 cacheKey = `base64:${base64.substring(0, 64)}:${base64.length}`;
                 if (!worldCache.has(cacheKey)) {
