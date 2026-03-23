@@ -1,0 +1,128 @@
+{
+  "profiles": {
+    "best_case": {
+      "name": "Best Case — Honest Customers",
+      "description": "Most customers are honest. Abuse stays low. Auto-refunds improve satisfaction and reduce costs.",
+      "is_default_baseline": false,
+      "parameters": {
+        "abuse_growth_factor": "1.1",
+        "trust_recovery_rate": "1.05",
+        "satisfaction_boost": "5",
+        "refund_growth_factor": "1.05",
+        "margin_erosion_factor": "0.98",
+        "escalation_from_distrust": "0.5",
+        "abuse_trigger_threshold": "15",
+        "trust_erosion_threshold": "12",
+        "cascade_threshold": "20",
+        "revenue_collapse_threshold": "25"
+      }
+    },
+    "expected": {
+      "name": "Expected — Mixed Behavior",
+      "description": "Some customers exploit the system. Abuse grows moderately. Trust erodes if abuse is not controlled.",
+      "is_default_baseline": true,
+      "parameters": {
+        "abuse_growth_factor": "1.3",
+        "trust_recovery_rate": "1.02",
+        "satisfaction_boost": "3",
+        "refund_growth_factor": "1.15",
+        "margin_erosion_factor": "0.95",
+        "escalation_from_distrust": "1.5",
+        "abuse_trigger_threshold": "10",
+        "trust_erosion_threshold": "8",
+        "cascade_threshold": "15",
+        "revenue_collapse_threshold": "20"
+      }
+    },
+    "worst_case": {
+      "name": "Worst Case — Abuse Spikes",
+      "description": "Word spreads that refunds are easy. Abuse grows rapidly. Trust collapses. Revenue hemorrhages.",
+      "is_default_baseline": false,
+      "parameters": {
+        "abuse_growth_factor": "1.6",
+        "trust_recovery_rate": "1.0",
+        "satisfaction_boost": "1",
+        "refund_growth_factor": "1.3",
+        "margin_erosion_factor": "0.88",
+        "escalation_from_distrust": "3.0",
+        "abuse_trigger_threshold": "5",
+        "trust_erosion_threshold": "5",
+        "cascade_threshold": "10",
+        "revenue_collapse_threshold": "15"
+      }
+    }
+  },
+  "parameter_definitions": {
+    "abuse_growth_factor": {
+      "type": "number",
+      "min": 1.0,
+      "max": 3.0,
+      "label": "Abuse Growth Factor",
+      "description": "How fast abuse rate multiplies each step when auto-refunds are active."
+    },
+    "trust_recovery_rate": {
+      "type": "number",
+      "min": 1.0,
+      "max": 1.2,
+      "label": "Trust Recovery Rate",
+      "description": "How much trust recovers per step when abuse is low."
+    },
+    "satisfaction_boost": {
+      "type": "number",
+      "min": 0,
+      "max": 10,
+      "label": "Satisfaction Boost",
+      "description": "Points of satisfaction gained from fast auto-refunds."
+    },
+    "refund_growth_factor": {
+      "type": "number",
+      "min": 1.0,
+      "max": 2.0,
+      "label": "Refund Volume Growth",
+      "description": "How fast refund requests grow when auto-refunds are easy."
+    },
+    "margin_erosion_factor": {
+      "type": "number",
+      "min": 0.5,
+      "max": 1.0,
+      "label": "Margin Erosion Factor",
+      "description": "Revenue margin multiplier per step from refund costs."
+    },
+    "escalation_from_distrust": {
+      "type": "number",
+      "min": 0,
+      "max": 5,
+      "label": "Escalation from Distrust",
+      "description": "Escalation rate increase when trust drops below threshold."
+    },
+    "abuse_trigger_threshold": {
+      "type": "number",
+      "min": 1,
+      "max": 30,
+      "label": "Abuse Trigger Threshold",
+      "description": "Abuse rate at which cascading effects begin."
+    },
+    "trust_erosion_threshold": {
+      "type": "number",
+      "min": 1,
+      "max": 20,
+      "label": "Trust Erosion Threshold",
+      "description": "Abuse rate at which trust starts declining."
+    },
+    "cascade_threshold": {
+      "type": "number",
+      "min": 5,
+      "max": 40,
+      "label": "Cascade Threshold",
+      "description": "Abuse rate at which compounding failures begin."
+    },
+    "revenue_collapse_threshold": {
+      "type": "number",
+      "min": 5,
+      "max": 40,
+      "label": "Revenue Collapse Threshold",
+      "description": "Refund rate at which revenue margin degrades rapidly."
+    }
+  },
+  "default_profile": "expected"
+}
