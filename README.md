@@ -135,11 +135,15 @@ Webhook Trigger → Simulate Agent Action → NeuroVerse Guard
 
 The example accepts a POST request with `intent` and `tool`, runs it through the guard, and returns the appropriate response (200 for ALLOW, 403 for BLOCK, 202 for PAUSE).
 
-## Building Your World File
+## Using Your Own World File
+
+The bundled worlds are great for getting started, but most teams will want to create their own governance rules. To use a custom world:
+
+1. **Build your world** at **[neuroverseos.com](https://neuroverseos.com)** — upload your docs or start from a template
+2. Download the `.nv-world.zip` file
+3. In the node, set **World Source** to **File Path** and point to your zip file or extracted directory — or use **Base64** for Docker/cloud environments where file paths are unavailable
 
 A world file contains your governance rules: invariants that must always hold, guards that intercept specific actions, roles with permissions, and kernel rules for system-level constraints.
-
-**[Build your world file free at neuroverseos.com](https://neuroverseos.com)** — upload your docs or start from a template.
 
 ## Verdict Object
 
