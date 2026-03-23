@@ -161,6 +161,79 @@ The `_debug` object contains additional diagnostic information:
 }
 ```
 
+---
+
+## NeuroVerse Simulate
+
+The **NeuroVerse Simulate** node runs your governance world's if/then rules engine forward in time. While the Guard node asks *"can this agent do this?"*, the Simulate node asks *"if this happens, what changes?"*
+
+### How It Works
+
+Your world file contains state variables (numeric/boolean/enum values), if/then rules (triggers that fire effects on state), and viability gates (thresholds that classify system health). The Simulate node evolves state through N rounds and routes based on the result.
+
+### Node Configuration
+
+| Field | Description |
+|-------|-------------|
+| **World Source** | File path or base64-encoded zip |
+| **Steps** | Number of simulation rounds (1 = immediate impact, 5+ = cascading effects) |
+| **Profile** | Assumption profile (e.g. `best_case`, `worst_case`, `regulatory_scrutiny`) |
+| **State Overrides** | Override starting state variables with JSON — inject real metrics from upstream nodes |
+| **Halt on Collapse** | When enabled, MODEL_COLLAPSES throws a node error and stops the workflow |
+
+### Outputs
+
+| Output | When | Viability Status |
+|--------|------|-----------------|
+| **HEALTHY** | System is stable | THRIVING or STABLE |
+| **DEGRADED** | System is under pressure | COMPRESSED |
+| **CRITICAL** | System is failing or collapsed | CRITICAL or MODEL_COLLAPSES |
+
+### Simulation Result
+
+Every output includes a `simulation` object:
+
+```json
+{
+  "simulation": {
+    "worldId": "social-media-network",
+    "finalViability": "CRITICAL",
+    "collapsed": true,
+    "collapseStep": 3,
+    "collapseRule": "rule-trust-erosion",
+    "initialState": { "trust_score": 40, "engagement_health": 70 },
+    "finalState": { "trust_score": 12, "engagement_health": 8 },
+    "stepDetails": [
+      {
+        "step": 1,
+        "rulesFired": 2,
+        "viability": "COMPRESSED",
+        "rulesTriggered": [
+          {
+            "ruleId": "rule-trust-erosion",
+            "label": "Trust Erosion",
+            "effects": [{ "target": "trust_score", "before": 40, "after": 28 }]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Example: Guard + Simulate Together
+
+```
+Customer Email → AI Draft Reply → NeuroVerse Guard → NeuroVerse Simulate
+                                       ↓                    ↓        ↓
+                                    ALLOW             HEALTHY   CRITICAL
+                                       ↓                ↓          ↓
+                                  [Feed into       Send reply   Hold for
+                                   Simulate]                    review
+```
+
+The Guard says "you're allowed to reply." The Simulate says "but at this rate, customer satisfaction collapses in 3 steps." **Guard is the brake pedal. Simulate is the dashboard gauges.**
+
 ## License
 
 Apache-2.0
