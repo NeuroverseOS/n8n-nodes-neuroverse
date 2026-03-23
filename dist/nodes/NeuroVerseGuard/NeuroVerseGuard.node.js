@@ -21,6 +21,19 @@ function getBundledWorldChoices() {
         return [];
     }
 }
+function scanDirectoryForWorlds(dirPath) {
+    try {
+        return (0, fs_1.readdirSync)(dirPath, { withFileTypes: true })
+            .filter((d) => d.isDirectory())
+            .map((d) => ({
+            name: d.name.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+            value: d.name,
+        }));
+    }
+    catch {
+        return [];
+    }
+}
 // ─── Field Name Normalization (Fix 3) ─────────────────────────────────────────
 // extractContentFields recognizes specific key names. Real-world workflows use
 // many synonyms.  Normalize before passing to the governance function.
@@ -250,6 +263,11 @@ class NeuroVerseGuard {
                         description: 'Use a world that ships with this package — zero setup required',
                     },
                     {
+                        name: 'Custom Directory',
+                        value: 'customDir',
+                        description: 'Scan a folder of your own worlds and pick one from a dropdown',
+                    },
+                    {
                         name: 'File Path',
                         value: 'filePath',
                         description: 'Load from a .nv-world.zip file or directory on disk',
@@ -273,6 +291,36 @@ class NeuroVerseGuard {
                 displayOptions: {
                     show: {
                         worldSource: ['bundled'],
+                    },
+                },
+            },
+            {
+                displayName: 'Custom Worlds Directory',
+                name: 'customWorldsDir',
+                type: 'string',
+                default: '',
+                required: true,
+                placeholder: '/data/my-worlds',
+                description: 'Path to a folder containing your world directories. Each subfolder is treated as a world.',
+                displayOptions: {
+                    show: {
+                        worldSource: ['customDir'],
+                    },
+                },
+            },
+            {
+                displayName: 'Custom World',
+                name: 'customWorld',
+                type: 'options',
+                typeOptions: {
+                    loadOptionsMethod: 'getCustomWorldChoices',
+                    loadOptionsDependsOn: ['customWorldsDir'],
+                },
+                default: '',
+                description: 'Select a world from your custom directory. Set the directory path above first, then click the refresh button.',
+                displayOptions: {
+                    show: {
+                        worldSource: ['customDir'],
                     },
                 },
             },
@@ -425,6 +473,21 @@ class NeuroVerseGuard {
             },
         ],
     };
+    methods = {
+        loadOptions: {
+            async getCustomWorldChoices() {
+                const customDir = this.getNodeParameter('customWorldsDir', '');
+                if (!customDir) {
+                    return [{ name: '(Set directory path above first)', value: '' }];
+                }
+                const worlds = scanDirectoryForWorlds(customDir);
+                if (worlds.length === 0) {
+                    return [{ name: '(No worlds found in directory)', value: '' }];
+                }
+                return worlds;
+            },
+        },
+    };
     async execute() {
         const items = this.getInputData();
         const allowItems = [];
@@ -444,6 +507,18 @@ class NeuroVerseGuard {
                 const worldName = this.getNodeParameter('bundledWorld', i);
                 cacheKey = `bundled:${worldName}`;
                 const worldDir = (0, path_1.join)(BUNDLED_WORLDS_DIR, worldName);
+                const currentMtime = getDirectoryMtime(worldDir);
+                const cached = worldCache.get(cacheKey);
+                if (!cached || cached.mtime < currentMtime) {
+                    const world = await (0, governance_1.loadWorld)(worldDir);
+                    worldCache.set(cacheKey, { world, mtime: currentMtime });
+                }
+            }
+            else if (worldSource === 'customDir') {
+                const customDir = this.getNodeParameter('customWorldsDir', i);
+                const worldName = this.getNodeParameter('customWorld', i);
+                const worldDir = (0, path_1.join)(customDir, worldName);
+                cacheKey = `custom:${worldDir}`;
                 const currentMtime = getDirectoryMtime(worldDir);
                 const cached = worldCache.get(cacheKey);
                 if (!cached || cached.mtime < currentMtime) {
@@ -571,7 +646,7 @@ class NeuroVerseGuard {
                 if (contentParts.length > 0) {
                     event.payload = contentParts.join('\n').substring(0, 20000);
                 }
-                verdict = (0, governance_1.evaluateGuard)(event, world, { level });
+                verdict = (0, governance_1.evaluateGuard)(event, world, { level, trace: true });
             }
             // ─── Fix 1: Re-evaluate with known surfaces if tool is unknown ──
             // The guard engine skips guards with appliesTo when the event's tool
@@ -581,7 +656,7 @@ class NeuroVerseGuard {
             if (!toolIsKnown) {
                 for (const surface of knownSurfaces) {
                     const probeEvent = { ...event, tool: surface };
-                    const probeVerdict = (0, governance_1.evaluateGuard)(probeEvent, world, { level });
+                    const probeVerdict = (0, governance_1.evaluateGuard)(probeEvent, world, { level, trace: true });
                     verdict = takeStrictestVerdict(verdict, probeVerdict);
                     if (verdict.status === 'BLOCK')
                         break; // can't get stricter
@@ -612,6 +687,75 @@ class NeuroVerseGuard {
                 }
             }
             // ─── Build output ───────────────────────────────────────────
+            const evidence = verdict.evidence;
+            const trace = verdict.trace;
+            // Build insights from evidence (always present) + trace (when available)
+            const insights = {
+                worldId: evidence?.worldId ?? null,
+                worldName: evidence?.worldName ?? null,
+                enforcementLevel: evidence?.enforcementLevel ?? level,
+                evaluatedAt: evidence?.evaluatedAt ? new Date(evidence.evaluatedAt).toISOString() : null,
+                invariantCoverage: {
+                    satisfied: evidence?.invariantsSatisfied ?? null,
+                    total: evidence?.invariantsTotal ?? null,
+                },
+                guardsMatched: evidence?.guardsMatched ?? [],
+                rulesMatched: evidence?.rulesMatched ?? [],
+            };
+            // Rich trace data — every check the engine performed
+            if (trace) {
+                insights.durationMs = trace.durationMs ?? null;
+                if (trace.guardChecks?.length) {
+                    insights.guardChecks = trace.guardChecks.map((gc) => ({
+                        guardId: gc.guardId ?? gc.id,
+                        label: gc.label,
+                        matched: gc.matched ?? gc.triggered,
+                        enforcement: gc.enforcement,
+                        matchedPatterns: gc.matchedPatterns ?? [],
+                    }));
+                }
+                if (trace.invariantChecks?.length) {
+                    insights.invariantChecks = trace.invariantChecks.map((ic) => ({
+                        invariantId: ic.invariantId ?? ic.id,
+                        label: ic.label,
+                        satisfied: ic.satisfied,
+                    }));
+                }
+                if (trace.kernelRuleChecks?.length) {
+                    insights.kernelRuleChecks = trace.kernelRuleChecks.map((kr) => ({
+                        ruleId: kr.ruleId ?? kr.id,
+                        label: kr.label,
+                        triggered: kr.triggered,
+                    }));
+                }
+                if (trace.safetyChecks?.length) {
+                    insights.safetyChecks = trace.safetyChecks;
+                }
+                if (trace.precedenceResolution) {
+                    insights.precedenceResolution = trace.precedenceResolution;
+                }
+            }
+            // Intent classification info
+            insights.intent = {
+                resolved: event.intent.substring(0, 500),
+                source: intentSource,
+                ...(originalIntent ? { original: originalIntent } : {}),
+                ...(classification ? { classification } : {}),
+            };
+            if (contentScanOverride) {
+                insights.contentScanOverride = {
+                    triggered: true,
+                    guardId: contentScanGuardId,
+                };
+            }
+            // Warning from the engine (e.g. ALLOW with advisory)
+            if (verdict.warning) {
+                insights.warning = verdict.warning;
+            }
+            // Intent record (what agent wanted vs. what happened)
+            if (verdict.intentRecord) {
+                insights.intentRecord = verdict.intentRecord;
+            }
             const outputItem = {
                 json: {
                     ...items[i].json,
@@ -619,22 +763,8 @@ class NeuroVerseGuard {
                         status: verdict.status,
                         reason: verdict.reason ?? null,
                         ruleId: verdict.ruleId ?? null,
-                        evidence: verdict.evidence ?? null,
                     },
-                    _debug: {
-                        intent: event.intent.substring(0, 500),
-                        intentSource,
-                        toolIsKnown,
-                        ...(contentScanOverride ? {
-                            contentScanOverride: true,
-                            contentScanGuardId,
-                        } : {}),
-                        ...(classification ? {
-                            classification,
-                            originalIntent,
-                        } : {}),
-                        stringFieldsScanned: Object.keys(inputJson).filter((k) => typeof inputJson[k] === 'string'),
-                    },
+                    insights,
                 },
             };
             // ─── Fix 2: Strict enforcement — throw on BLOCK ────────────

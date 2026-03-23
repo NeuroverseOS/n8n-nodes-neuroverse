@@ -21,6 +21,19 @@ function getBundledWorldChoices() {
         return [];
     }
 }
+function scanDirectoryForWorlds(dirPath) {
+    try {
+        return (0, fs_1.readdirSync)(dirPath, { withFileTypes: true })
+            .filter((d) => d.isDirectory())
+            .map((d) => ({
+            name: d.name.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+            value: d.name,
+        }));
+    }
+    catch {
+        return [];
+    }
+}
 const worldCache = new Map();
 function getDirectoryMtime(dirPath) {
     try {
@@ -82,6 +95,11 @@ class NeuroVerseSimulate {
                         description: 'Use a world that ships with this package — zero setup required',
                     },
                     {
+                        name: 'Custom Directory',
+                        value: 'customDir',
+                        description: 'Scan a folder of your own worlds and pick one from a dropdown',
+                    },
+                    {
                         name: 'File Path',
                         value: 'filePath',
                         description: 'Load from a .nv-world.zip file or directory on disk',
@@ -105,6 +123,36 @@ class NeuroVerseSimulate {
                 displayOptions: {
                     show: {
                         worldSource: ['bundled'],
+                    },
+                },
+            },
+            {
+                displayName: 'Custom Worlds Directory',
+                name: 'customWorldsDir',
+                type: 'string',
+                default: '',
+                required: true,
+                placeholder: '/data/my-worlds',
+                description: 'Path to a folder containing your world directories. Each subfolder is treated as a world.',
+                displayOptions: {
+                    show: {
+                        worldSource: ['customDir'],
+                    },
+                },
+            },
+            {
+                displayName: 'Custom World',
+                name: 'customWorld',
+                type: 'options',
+                typeOptions: {
+                    loadOptionsMethod: 'getCustomWorldChoices',
+                    loadOptionsDependsOn: ['customWorldsDir'],
+                },
+                default: '',
+                description: 'Select a world from your custom directory. Set the directory path above first, then click the refresh button.',
+                displayOptions: {
+                    show: {
+                        worldSource: ['customDir'],
                     },
                 },
             },
@@ -174,6 +222,21 @@ class NeuroVerseSimulate {
             },
         ],
     };
+    methods = {
+        loadOptions: {
+            async getCustomWorldChoices() {
+                const customDir = this.getNodeParameter('customWorldsDir', '');
+                if (!customDir) {
+                    return [{ name: '(Set directory path above first)', value: '' }];
+                }
+                const worlds = scanDirectoryForWorlds(customDir);
+                if (worlds.length === 0) {
+                    return [{ name: '(No worlds found in directory)', value: '' }];
+                }
+                return worlds;
+            },
+        },
+    };
     async execute() {
         const items = this.getInputData();
         const healthyItems = [];
@@ -191,6 +254,18 @@ class NeuroVerseSimulate {
                 const worldName = this.getNodeParameter('bundledWorld', i);
                 cacheKey = `bundled:${worldName}`;
                 const worldDir = (0, path_1.join)(BUNDLED_WORLDS_DIR, worldName);
+                const currentMtime = getDirectoryMtime(worldDir);
+                const cached = worldCache.get(cacheKey);
+                if (!cached || cached.mtime < currentMtime) {
+                    const world = await (0, governance_1.loadWorld)(worldDir);
+                    worldCache.set(cacheKey, { world, mtime: currentMtime });
+                }
+            }
+            else if (worldSource === 'customDir') {
+                const customDir = this.getNodeParameter('customWorldsDir', i);
+                const worldName = this.getNodeParameter('customWorld', i);
+                const worldDir = (0, path_1.join)(customDir, worldName);
+                cacheKey = `custom:${worldDir}`;
                 const currentMtime = getDirectoryMtime(worldDir);
                 const cached = worldCache.get(cacheKey);
                 if (!cached || cached.mtime < currentMtime) {
@@ -237,6 +312,35 @@ class NeuroVerseSimulate {
                 options.stateOverrides = stateOverrides;
             const result = (0, governance_1.simulateWorld)(world, options);
             // ─── Build output ───────────────────────────────────────────
+            // Collect all unique rules evaluated across all steps
+            const allRulesEvaluated = new Map();
+            for (const step of result.steps) {
+                for (const r of step.rulesEvaluated) {
+                    const existing = allRulesEvaluated.get(r.ruleId);
+                    if (!existing) {
+                        allRulesEvaluated.set(r.ruleId, {
+                            ruleId: r.ruleId,
+                            label: r.label,
+                            triggeredSteps: r.triggered ? [step.step] : [],
+                            excludedSteps: r.excluded ? [step.step] : [],
+                        });
+                    }
+                    else {
+                        if (r.triggered)
+                            existing.triggeredSteps.push(step.step);
+                        if (r.excluded)
+                            existing.excludedSteps.push(step.step);
+                    }
+                }
+            }
+            // Compute state deltas — which variables changed and by how much
+            const stateDeltas = {};
+            for (const [key, finalVal] of Object.entries(result.finalState)) {
+                const initialVal = result.initialState[key];
+                if (initialVal !== finalVal) {
+                    stateDeltas[key] = { from: initialVal, to: finalVal };
+                }
+            }
             const outputItem = {
                 json: {
                     ...items[i].json,
@@ -256,8 +360,10 @@ class NeuroVerseSimulate {
                         stepDetails: result.steps.map((step) => ({
                             step: step.step,
                             rulesFired: step.rulesFired,
+                            rulesChecked: step.rulesEvaluated.length,
                             viability: step.viability,
                             collapsed: step.collapsed,
+                            stateAfter: step.stateAfter,
                             rulesTriggered: step.rulesEvaluated
                                 .filter((r) => r.triggered)
                                 .map((r) => ({
@@ -270,6 +376,20 @@ class NeuroVerseSimulate {
                                     after: e.after,
                                 })),
                             })),
+                        })),
+                    },
+                    insights: {
+                        stateDeltas,
+                        totalRulesEvaluated: allRulesEvaluated.size,
+                        totalRulesFired: [...allRulesEvaluated.values()].filter((r) => r.triggeredSteps.length > 0).length,
+                        rulesNeverTriggered: [...allRulesEvaluated.values()]
+                            .filter((r) => r.triggeredSteps.length === 0)
+                            .map((r) => ({ ruleId: r.ruleId, label: r.label })),
+                        rulesSummary: [...allRulesEvaluated.values()].map((r) => ({
+                            ruleId: r.ruleId,
+                            label: r.label,
+                            triggeredSteps: r.triggeredSteps,
+                            excluded: r.excludedSteps.length > 0,
                         })),
                     },
                 },
