@@ -13,17 +13,17 @@ Deterministic. Sub-millisecond. No LLM calls. Full audit trail.
 
 ## Installation
 
-In n8n, go to **Settings → Community Nodes** and install:
+In n8n, go to **Settings → Community Nodes → Browse** and search:
 
 ```
-n8n-nodes-neuroverse
+neuroverse
 ```
 
 Or install via CLI:
 
 ```bash
 cd ~/.n8n
-npm install n8n-nodes-neuroverse
+npm install @neuroverseos/n8n-nodes-neuroverse
 ```
 
 ## How It Works
@@ -50,6 +50,18 @@ Three functions. No network. No LLM. Deterministic.
 | **Intent** | What the agent is trying to do |
 | **Tool** | Which tool/API the agent is calling (optional) |
 | **Enforcement Level** | Basic, Standard, or Strict |
+| **Strict Enforcement** | When enabled, BLOCK verdicts throw a node error and stop the workflow entirely |
+| **AI Intent Classification** | Use an AI model to classify true intent before evaluation (prevents false positives) |
+
+### Strict Enforcement
+
+By default, the Guard node routes BLOCK verdicts to the second output — but downstream nodes can still be wired to continue execution. Enable **Strict Enforcement** to make BLOCK verdicts throw a node error, stopping the entire workflow. This prevents anyone from wiring around governance decisions.
+
+### AI Intent Classification
+
+When enabled, the node uses a fast AI model (OpenAI, Anthropic, or Ollama) to classify the true intent before guard evaluation. This prevents false positives when raw text — like customer emails mentioning "refund" — gets evaluated as if the agent is issuing a refund.
+
+Supported providers: OpenAI, Anthropic, Ollama (local).
 
 ### Outputs
 
@@ -62,6 +74,38 @@ The node has three separate output connections on the canvas:
 | **PAUSE** | Action needs human review | Original data + verdict.reason + verdict.evidence |
 
 Wire each output to different downstream nodes to handle each case visually.
+
+## Security Features
+
+### Tool Surface Validation
+
+Guards define which tools they apply to (e.g., `email`, `smtp`, `gmail`). If an action uses a tool name that doesn't match any known surface, the node evaluates against **all** known surfaces and takes the strictest verdict. This prevents bypass by using unknown tool names like `slack-bot` or `billing-api`.
+
+### Content Safety Scanning
+
+After intent evaluation, the node scans the actual message body and draft replies for sensitive data — regardless of intent classification. Catches:
+
+- Passwords and credentials (`password: hunter2`)
+- API keys and tokens (`api_key = sk-proj-...`)
+- SSNs (`123-45-6789`)
+- Credit card numbers
+- Private keys (`-----BEGIN PRIVATE KEY-----`)
+
+An agent with a clean intent like "reply to customer inquiry" will still be blocked if the reply body contains a password.
+
+### Field Name Normalization
+
+Real-world n8n workflows use many different field names for the same concept. The node normalizes 30+ common synonyms before evaluation:
+
+| Your field name | Normalized to |
+|---|---|
+| `reply_text`, `response`, `draft`, `answer`, `ai_output` | `draft_reply` |
+| `email_body`, `message`, `msg`, `inquiry`, `ticket_body` | `customer_input` |
+| `subject`, `topic`, `metadata`, `category` | `context` |
+
+### Vocabulary Resolution
+
+Raw intent text like "Send general reply" is resolved to the matching vocabulary key (e.g., `reply_to_inquiry`) from your world file. This prevents the guard engine's pattern matching from over-triggering on action verbs like "send" or "share" when they appear in harmless contexts.
 
 ## Example Workflow
 
@@ -100,6 +144,19 @@ Every output includes a `verdict` object:
       "invariantRef": "margin_floor_15_percent",
       "evaluationChain": ["safety", "roles", "guards", "kernel", "level"]
     }
+  }
+}
+```
+
+The `_debug` object contains additional diagnostic information:
+
+```json
+{
+  "_debug": {
+    "intent": "reply_to_inquiry",
+    "intentSource": "raw",
+    "toolIsKnown": true,
+    "stringFieldsScanned": ["email_body", "draft_reply"]
   }
 }
 ```
