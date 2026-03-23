@@ -66,6 +66,77 @@ function viabilityToOutput(status) {
             return 0;
     }
 }
+// ─── Narrative Generation ────────────────────────────────────────────────────
+function buildSimulateNarrative(result, stateDeltas, allRules) {
+    const lines = [];
+    const totalSteps = result.steps.length;
+    const firedRules = [...allRules.values()].filter((r) => r.triggeredSteps.length > 0);
+    const silentRules = [...allRules.values()].filter((r) => r.triggeredSteps.length === 0);
+    // Opening — viability trajectory
+    const viabilityPath = result.steps.map((s) => s.viability);
+    const uniqueStates = [...new Set(viabilityPath)];
+    if (uniqueStates.length === 1) {
+        lines.push(`Over ${totalSteps} step${totalSteps > 1 ? 's' : ''}, the system remained ${viabilityPath[0]}.`);
+    }
+    else {
+        lines.push(`The system moved from ${viabilityPath[0]} to ${result.finalViability} over ${totalSteps} step${totalSteps > 1 ? 's' : ''}.`);
+    }
+    // Collapse narrative
+    if (result.collapsed) {
+        const collapseRule = allRules.get(result.collapseRule ?? '');
+        lines.push(`The model collapsed at step ${result.collapseStep}${collapseRule ? ` due to "${collapseRule.label}"` : ''}.`);
+    }
+    // State change narrative — biggest movers
+    const numericDeltas = Object.entries(stateDeltas)
+        .filter(([, d]) => typeof d.from === 'number' && typeof d.to === 'number')
+        .map(([key, d]) => ({
+        key,
+        from: d.from,
+        to: d.to,
+        delta: d.to - d.from,
+    }))
+        .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+    if (numericDeltas.length > 0) {
+        const top = numericDeltas.slice(0, 3);
+        const descriptions = top.map((d) => {
+            const direction = d.delta > 0 ? 'increased' : 'decreased';
+            const pct = d.from !== 0 ? Math.abs(Math.round((d.delta / d.from) * 100)) : null;
+            const label = d.key.replace(/_/g, ' ');
+            return pct !== null
+                ? `${label} ${direction} ${pct}% (${d.from} → ${d.to})`
+                : `${label} ${direction} from ${d.from} to ${d.to}`;
+        });
+        lines.push(`Key changes: ${descriptions.join('; ')}.`);
+    }
+    // Dominant rules — which rules fired most often
+    if (firedRules.length > 0) {
+        const sorted = [...firedRules].sort((a, b) => b.triggeredSteps.length - a.triggeredSteps.length);
+        const dominant = sorted[0];
+        if (dominant.triggeredSteps.length === totalSteps) {
+            lines.push(`"${dominant.label}" fired every single step — this is the primary driver of state change.`);
+        }
+        else if (dominant.triggeredSteps.length > totalSteps / 2) {
+            lines.push(`"${dominant.label}" fired in ${dominant.triggeredSteps.length} of ${totalSteps} steps, making it the dominant force.`);
+        }
+        if (firedRules.length > 1) {
+            const others = sorted.slice(1, 3).map((r) => `"${r.label}" (${r.triggeredSteps.length} steps)`);
+            lines.push(`Other active rules: ${others.join(', ')}.`);
+        }
+    }
+    // Silent rules narrative
+    if (silentRules.length > 0 && firedRules.length > 0) {
+        const pct = Math.round((silentRules.length / allRules.size) * 100);
+        lines.push(`${silentRules.length} of ${allRules.size} rules (${pct}%) never triggered — ${silentRules.map((r) => `"${r.label}"`).slice(0, 3).join(', ')}${silentRules.length > 3 ? ` and ${silentRules.length - 3} more` : ''}.`);
+    }
+    // Cascade detection — did one rule's effects trigger another?
+    if (totalSteps > 1 && firedRules.length > 1) {
+        const laterRules = firedRules.filter((r) => r.triggeredSteps[0] > 1);
+        if (laterRules.length > 0) {
+            lines.push(`Cascading effects detected: ${laterRules.map((r) => `"${r.label}" started firing at step ${r.triggeredSteps[0]}`).slice(0, 2).join('; ')}. These were triggered by state changes from earlier rules.`);
+        }
+    }
+    return lines;
+}
 // ─── Node ────────────────────────────────────────────────────────────────────
 class NeuroVerseSimulate {
     description = {
@@ -379,6 +450,7 @@ class NeuroVerseSimulate {
                         })),
                     },
                     insights: {
+                        narrative: buildSimulateNarrative(result, stateDeltas, allRulesEvaluated),
                         stateDeltas,
                         totalRulesEvaluated: allRulesEvaluated.size,
                         totalRulesFired: [...allRulesEvaluated.values()].filter((r) => r.triggeredSteps.length > 0).length,

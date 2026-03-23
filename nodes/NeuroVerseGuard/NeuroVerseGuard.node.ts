@@ -267,6 +267,107 @@ function scanContentAgainstImmutableGuards(
   return { violated: false };
 }
 
+// ─── Narrative Generation ────────────────────────────────────────────────────
+
+function buildGuardNarrative(
+  verdict: GuardVerdict,
+  evidence: any,
+  trace: any,
+  resolvedIntent: string,
+  tool: string,
+  intentSource: string,
+  contentScanOverride: boolean,
+  toolIsKnown: boolean,
+): string[] {
+  const lines: string[] = [];
+  const status = verdict.status;
+
+  // Opening — what happened
+  if (status === 'ALLOW') {
+    lines.push(`The action "${resolvedIntent}" was allowed${tool ? ` via ${tool}` : ''}.`);
+  } else if (status === 'BLOCK') {
+    lines.push(`The action "${resolvedIntent}" was blocked${tool ? ` via ${tool}` : ''}.`);
+  } else if (status === 'PAUSE') {
+    lines.push(`The action "${resolvedIntent}" was paused for human review${tool ? ` via ${tool}` : ''}.`);
+  }
+
+  // Why — the reason
+  if (verdict.reason) {
+    lines.push(verdict.reason);
+  }
+
+  // Content scan override narrative
+  if (contentScanOverride) {
+    lines.push(
+      'Although the agent\'s intent was acceptable, the actual content of the message contained policy-violating material. The intent passed but the content was blocked.',
+    );
+  }
+
+  // Unknown tool narrative
+  if (!toolIsKnown && tool) {
+    lines.push(
+      `The tool "${tool}" is not recognized by this world's policy. The system evaluated against all known tool surfaces and applied the strictest result. This is a fail-closed behavior — unknown tools are treated with maximum scrutiny.`,
+    );
+  }
+
+  // Intent classification narrative
+  if (intentSource === 'ai') {
+    lines.push('The intent was classified by AI before evaluation — the raw text was interpreted to determine the true action.');
+  } else if (intentSource === 'fallback') {
+    lines.push('AI classification failed, so the raw intent text was used directly. This may lead to less precise guard matching.');
+  }
+
+  // Guard evaluation summary
+  if (trace?.guardChecks?.length) {
+    const matched = trace.guardChecks.filter((gc: any) => gc.matched || gc.triggered);
+    const total = trace.guardChecks.length;
+    if (matched.length === 0) {
+      lines.push(`${total} guard${total > 1 ? 's were' : ' was'} evaluated — none matched this action.`);
+    } else {
+      const matchLabels = matched.map((gc: any) => `"${gc.label || gc.guardId || gc.id}"`).slice(0, 3);
+      lines.push(
+        `${total} guard${total > 1 ? 's were' : ' was'} evaluated; ${matched.length} matched: ${matchLabels.join(', ')}${matched.length > 3 ? ` and ${matched.length - 3} more` : ''}.`,
+      );
+    }
+  }
+
+  // Invariant coverage
+  const invSatisfied = evidence?.invariantsSatisfied;
+  const invTotal = evidence?.invariantsTotal;
+  if (invTotal != null && invTotal > 0) {
+    if (invSatisfied === invTotal) {
+      lines.push(`All ${invTotal} invariants are satisfied.`);
+    } else {
+      const failed = invTotal - (invSatisfied ?? 0);
+      lines.push(`${failed} of ${invTotal} invariant${failed > 1 ? 's are' : ' is'} not satisfied — these represent hard constraints that should always hold.`);
+
+      // Name the failed invariants if we have trace
+      if (trace?.invariantChecks?.length) {
+        const failedChecks = trace.invariantChecks.filter((ic: any) => !ic.satisfied);
+        if (failedChecks.length > 0) {
+          const names = failedChecks.map((ic: any) => `"${ic.label || ic.invariantId || ic.id}"`).slice(0, 3);
+          lines.push(`Failed invariants: ${names.join(', ')}.`);
+        }
+      }
+    }
+  }
+
+  // Warning narrative
+  if ((verdict as any).warning) {
+    lines.push(`Advisory warning: ${(verdict as any).warning}`);
+  }
+
+  // Precedence narrative
+  if (trace?.precedenceResolution) {
+    const pr = trace.precedenceResolution;
+    lines.push(
+      `The final decision came from the ${pr.decidingLayer} layer (rule: ${pr.decidingId ?? 'default'}, strategy: ${pr.strategy ?? 'strictest-wins'}).`,
+    );
+  }
+
+  return lines;
+}
+
 // ─── Node ─────────────────────────────────────────────────────────────────────
 
 export class NeuroVerseGuard implements INodeType {
@@ -831,6 +932,18 @@ export class NeuroVerseGuard implements INodeType {
       if ((verdict as any).intentRecord) {
         insights.intentRecord = (verdict as any).intentRecord;
       }
+
+      // ─── Narrative ──────────────────────────────────────────────
+      insights.narrative = buildGuardNarrative(
+        verdict,
+        evidence,
+        trace,
+        event.intent as string,
+        tool,
+        intentSource,
+        contentScanOverride,
+        toolIsKnown,
+      );
 
       const outputItem: INodeExecutionData = {
         json: {
