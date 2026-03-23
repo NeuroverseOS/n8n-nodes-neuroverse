@@ -55,8 +55,9 @@ Three functions. No network. No LLM. Deterministic.
 
 | Field | Description |
 |-------|-------------|
-| **World Source** | **Bundled** (default — select a pre-packaged world), **File Path**, or **Base64** |
-| **Bundled World** | Select a governance world included with this package — zero setup required |
+| **World Source** | **Bundled**, **Custom Directory**, **File Path**, or **Base64** |
+| **Bundled World** | Select a pre-packaged governance world — zero setup required |
+| **Custom Directory** | Point to a folder of your own worlds and pick from a dropdown |
 | **World File Path** | Path to your `.nv-world.zip` or extracted directory |
 | **World File (Base64)** | Base64-encoded zip — useful in Docker/cloud environments |
 | **Intent** | What the agent is trying to do |
@@ -162,35 +163,62 @@ A world file contains your governance rules: invariants that must always hold, g
 
 ## Verdict Object
 
-Every output includes a `verdict` object:
+Every Guard output includes a `verdict` and an `insights` object:
 
 ```json
 {
   "verdict": {
     "status": "BLOCK",
     "reason": "Action violates invariant: margin_floor_15_percent",
-    "ruleId": "guard-pricing-change",
-    "evidence": {
-      "matchedGuard": "pricing-change-guard",
-      "invariantRef": "margin_floor_15_percent",
-      "evaluationChain": ["safety", "roles", "guards", "kernel", "level"]
+    "ruleId": "guard-pricing-change"
+  }
+}
+```
+
+## Insights Object (Guard)
+
+The `insights` object gives full visibility into *how* the governance decision was made:
+
+```json
+{
+  "insights": {
+    "worldId": "acme-policy",
+    "worldName": "Acme Policy",
+    "enforcementLevel": "standard",
+    "evaluatedAt": "2025-01-15T10:30:00.000Z",
+    "invariantCoverage": { "satisfied": 5, "total": 5 },
+    "guardsMatched": ["guard-pricing-change"],
+    "rulesMatched": ["kernel-margin-floor"],
+    "durationMs": 2,
+    "guardChecks": [
+      {
+        "guardId": "guard-pricing-change",
+        "label": "Pricing Change Guard",
+        "matched": true,
+        "enforcement": "block",
+        "matchedPatterns": ["change_price", "update_discount"]
+      }
+    ],
+    "invariantChecks": [
+      { "invariantId": "margin_floor_15_percent", "label": "Margin Floor 15%", "satisfied": false }
+    ],
+    "kernelRuleChecks": [
+      { "ruleId": "kernel-margin-floor", "label": "Enforce Margin Floor", "triggered": true }
+    ],
+    "precedenceResolution": {
+      "decidingLayer": "guards",
+      "decidingId": "guard-pricing-change",
+      "strategy": "strictest-wins"
+    },
+    "intent": {
+      "resolved": "change_price",
+      "source": "raw"
     }
   }
 }
 ```
 
-The `_debug` object contains additional diagnostic information:
-
-```json
-{
-  "_debug": {
-    "intent": "reply_to_inquiry",
-    "intentSource": "raw",
-    "toolIsKnown": true,
-    "stringFieldsScanned": ["email_body", "draft_reply"]
-  }
-}
-```
+This lets you see every guard checked, every invariant tested, and exactly which rule made the final call.
 
 ---
 
@@ -206,8 +234,9 @@ Your world file contains state variables (numeric/boolean/enum values), if/then 
 
 | Field | Description |
 |-------|-------------|
-| **World Source** | **Bundled** (default — select a pre-packaged world), **File Path**, or **Base64** |
-| **Bundled World** | Select a governance world included with this package — zero setup required |
+| **World Source** | **Bundled**, **Custom Directory**, **File Path**, or **Base64** |
+| **Bundled World** | Select a pre-packaged governance world — zero setup required |
+| **Custom Directory** | Point to a folder of your own worlds and pick from a dropdown |
 | **Steps** | Number of simulation rounds (1 = immediate impact, 5+ = cascading effects) |
 | **Profile** | Assumption profile (e.g. `best_case`, `worst_case`, `regulatory_scrutiny`) |
 | **State Overrides** | Override starting state variables with JSON — inject real metrics from upstream nodes |
@@ -252,6 +281,31 @@ Every output includes a `simulation` object:
   }
 }
 ```
+
+### Insights Object (Simulate)
+
+The Simulate node also outputs an `insights` object summarizing the entire run:
+
+```json
+{
+  "insights": {
+    "stateDeltas": {
+      "trust_score": { "from": 40, "to": 12 },
+      "engagement_health": { "from": 70, "to": 8 }
+    },
+    "totalRulesEvaluated": 6,
+    "totalRulesFired": 3,
+    "rulesNeverTriggered": [
+      { "ruleId": "rule-ad-revenue", "label": "Ad Revenue Pressure" }
+    ],
+    "rulesSummary": [
+      { "ruleId": "rule-trust-erosion", "label": "Trust Erosion", "triggeredSteps": [1, 2, 3], "excluded": false }
+    ]
+  }
+}
+```
+
+`stateDeltas` shows exactly what changed. `rulesNeverTriggered` tells you which rules exist but didn't fire — useful for understanding why a simulation passed when you expected it to fail.
 
 ### Example: Guard + Simulate Together
 

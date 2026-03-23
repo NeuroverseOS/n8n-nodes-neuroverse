@@ -707,7 +707,7 @@ export class NeuroVerseGuard implements INodeType {
           event.payload = contentParts.join('\n').substring(0, 20000);
         }
 
-        verdict = evaluateGuard(event as any, world, { level } as any);
+        verdict = evaluateGuard(event as any, world, { level, trace: true } as any);
       }
 
       // ─── Fix 1: Re-evaluate with known surfaces if tool is unknown ──
@@ -718,7 +718,7 @@ export class NeuroVerseGuard implements INodeType {
       if (!toolIsKnown) {
         for (const surface of knownSurfaces) {
           const probeEvent = { ...event, tool: surface };
-          const probeVerdict = evaluateGuard(probeEvent as any, world, { level } as any);
+          const probeVerdict = evaluateGuard(probeEvent as any, world, { level, trace: true } as any);
           verdict = takeStrictestVerdict(verdict, probeVerdict);
           if (verdict.status === 'BLOCK') break; // can't get stricter
         }
@@ -751,6 +751,87 @@ export class NeuroVerseGuard implements INodeType {
       }
 
       // ─── Build output ───────────────────────────────────────────
+      const evidence = verdict.evidence as any;
+      const trace = (verdict as any).trace as any;
+
+      // Build insights from evidence (always present) + trace (when available)
+      const insights: Record<string, unknown> = {
+        worldId: evidence?.worldId ?? null,
+        worldName: evidence?.worldName ?? null,
+        enforcementLevel: evidence?.enforcementLevel ?? level,
+        evaluatedAt: evidence?.evaluatedAt ? new Date(evidence.evaluatedAt).toISOString() : null,
+        invariantCoverage: {
+          satisfied: evidence?.invariantsSatisfied ?? null,
+          total: evidence?.invariantsTotal ?? null,
+        },
+        guardsMatched: evidence?.guardsMatched ?? [],
+        rulesMatched: evidence?.rulesMatched ?? [],
+      };
+
+      // Rich trace data — every check the engine performed
+      if (trace) {
+        insights.durationMs = trace.durationMs ?? null;
+
+        if (trace.guardChecks?.length) {
+          insights.guardChecks = trace.guardChecks.map((gc: any) => ({
+            guardId: gc.guardId ?? gc.id,
+            label: gc.label,
+            matched: gc.matched ?? gc.triggered,
+            enforcement: gc.enforcement,
+            matchedPatterns: gc.matchedPatterns ?? [],
+          }));
+        }
+
+        if (trace.invariantChecks?.length) {
+          insights.invariantChecks = trace.invariantChecks.map((ic: any) => ({
+            invariantId: ic.invariantId ?? ic.id,
+            label: ic.label,
+            satisfied: ic.satisfied,
+          }));
+        }
+
+        if (trace.kernelRuleChecks?.length) {
+          insights.kernelRuleChecks = trace.kernelRuleChecks.map((kr: any) => ({
+            ruleId: kr.ruleId ?? kr.id,
+            label: kr.label,
+            triggered: kr.triggered,
+          }));
+        }
+
+        if (trace.safetyChecks?.length) {
+          insights.safetyChecks = trace.safetyChecks;
+        }
+
+        if (trace.precedenceResolution) {
+          insights.precedenceResolution = trace.precedenceResolution;
+        }
+      }
+
+      // Intent classification info
+      insights.intent = {
+        resolved: (event.intent as string).substring(0, 500),
+        source: intentSource,
+        ...(originalIntent ? { original: originalIntent } : {}),
+        ...(classification ? { classification } : {}),
+      };
+
+      if (contentScanOverride) {
+        insights.contentScanOverride = {
+          triggered: true,
+          guardId: contentScanGuardId,
+        };
+      }
+
+      // Warning from the engine (e.g. ALLOW with advisory)
+      if ((verdict as any).warning) {
+        insights.warning = (verdict as any).warning;
+      }
+
+      // Intent record (what agent wanted vs. what happened)
+      if ((verdict as any).intentRecord) {
+        insights.intentRecord = (verdict as any).intentRecord;
+      }
+
       const outputItem: INodeExecutionData = {
         json: {
           ...items[i].json,
@@ -758,24 +839,8 @@ export class NeuroVerseGuard implements INodeType {
             status: verdict.status,
             reason: verdict.reason ?? null,
             ruleId: verdict.ruleId ?? null,
-            evidence: verdict.evidence ?? null,
           },
-          _debug: {
-            intent: (event.intent as string).substring(0, 500),
-            intentSource,
-            toolIsKnown,
-            ...(contentScanOverride ? {
-              contentScanOverride: true,
-              contentScanGuardId,
-            } : {}),
-            ...(classification ? {
-              classification,
-              originalIntent,
-            } : {}),
-            stringFieldsScanned: Object.keys(inputJson).filter(
-              (k: string) => typeof inputJson[k] === 'string',
-            ),
-          },
+          insights,
         },
       };
 

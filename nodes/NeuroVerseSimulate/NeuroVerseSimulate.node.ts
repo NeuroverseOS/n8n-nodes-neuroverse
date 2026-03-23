@@ -348,6 +348,35 @@ export class NeuroVerseSimulate implements INodeType {
       const result: SimulationResult = simulateWorld(world as any, options as any);
 
       // ─── Build output ───────────────────────────────────────────
+
+      // Collect all unique rules evaluated across all steps
+      const allRulesEvaluated = new Map<string, { ruleId: string; label: string; triggeredSteps: number[]; excludedSteps: number[] }>();
+      for (const step of result.steps) {
+        for (const r of step.rulesEvaluated) {
+          const existing = allRulesEvaluated.get(r.ruleId);
+          if (!existing) {
+            allRulesEvaluated.set(r.ruleId, {
+              ruleId: r.ruleId,
+              label: r.label,
+              triggeredSteps: r.triggered ? [step.step] : [],
+              excludedSteps: r.excluded ? [step.step] : [],
+            });
+          } else {
+            if (r.triggered) existing.triggeredSteps.push(step.step);
+            if (r.excluded) existing.excludedSteps.push(step.step);
+          }
+        }
+      }
+
+      // Compute state deltas — which variables changed and by how much
+      const stateDeltas: Record<string, { from: unknown; to: unknown }> = {};
+      for (const [key, finalVal] of Object.entries(result.finalState)) {
+        const initialVal = result.initialState[key];
+        if (initialVal !== finalVal) {
+          stateDeltas[key] = { from: initialVal, to: finalVal };
+        }
+      }
+
       const outputItem: INodeExecutionData = {
         json: {
           ...items[i].json,
@@ -367,8 +396,10 @@ export class NeuroVerseSimulate implements INodeType {
             stepDetails: result.steps.map((step) => ({
               step: step.step,
               rulesFired: step.rulesFired,
+              rulesChecked: step.rulesEvaluated.length,
               viability: step.viability,
               collapsed: step.collapsed,
+              stateAfter: step.stateAfter,
               rulesTriggered: step.rulesEvaluated
                 .filter((r) => r.triggered)
                 .map((r) => ({
@@ -381,6 +412,20 @@ export class NeuroVerseSimulate implements INodeType {
                     after: e.after,
                   })),
                 })),
+            })),
+          },
+          insights: {
+            stateDeltas,
+            totalRulesEvaluated: allRulesEvaluated.size,
+            totalRulesFired: [...allRulesEvaluated.values()].filter((r) => r.triggeredSteps.length > 0).length,
+            rulesNeverTriggered: [...allRulesEvaluated.values()]
+              .filter((r) => r.triggeredSteps.length === 0)
+              .map((r) => ({ ruleId: r.ruleId, label: r.label })),
+            rulesSummary: [...allRulesEvaluated.values()].map((r) => ({
+              ruleId: r.ruleId,
+              label: r.label,
+              triggeredSteps: r.triggeredSteps,
+              excluded: r.excludedSteps.length > 0,
             })),
           },
         },
