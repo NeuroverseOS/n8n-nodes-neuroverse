@@ -26,6 +26,17 @@ cd ~/.n8n
 npm install @neuroverseos/n8n-nodes-neuroverse
 ```
 
+## Bundled Worlds
+
+This package ships with ready-to-use governance worlds — no configuration needed:
+
+| World | Description |
+|-------|-------------|
+| **Nexus Email Governance** | Guards for AI-drafted email replies — blocks credential leaks, enforces tone policy, catches PII in outbound messages |
+| **Refund Policy Simulator** | Simulate how refund policy changes cascade through customer satisfaction, churn, and revenue over time |
+
+Select **Bundled** as the World Source in either node to use these out of the box. You can also build your own worlds at [neuroverseos.com](https://neuroverseos.com).
+
 ## How It Works
 
 The NeuroVerse Guard evaluates every action against your governance world — a portable set of rules, invariants, guards, and roles defined in a `.nv-world.zip` file.
@@ -44,7 +55,8 @@ Three functions. No network. No LLM. Deterministic.
 
 | Field | Description |
 |-------|-------------|
-| **World Source** | Load from a file path or base64-encoded zip |
+| **World Source** | **Bundled** (default — select a pre-packaged world), **File Path**, or **Base64** |
+| **Bundled World** | Select a governance world included with this package — zero setup required |
 | **World File Path** | Path to your `.nv-world.zip` or extracted directory |
 | **World File (Base64)** | Base64-encoded zip — useful in Docker/cloud environments |
 | **Intent** | What the agent is trying to do |
@@ -175,7 +187,8 @@ Your world file contains state variables (numeric/boolean/enum values), if/then 
 
 | Field | Description |
 |-------|-------------|
-| **World Source** | File path or base64-encoded zip |
+| **World Source** | **Bundled** (default — select a pre-packaged world), **File Path**, or **Base64** |
+| **Bundled World** | Select a governance world included with this package — zero setup required |
 | **Steps** | Number of simulation rounds (1 = immediate impact, 5+ = cascading effects) |
 | **Profile** | Assumption profile (e.g. `best_case`, `worst_case`, `regulatory_scrutiny`) |
 | **State Overrides** | Override starting state variables with JSON — inject real metrics from upstream nodes |
