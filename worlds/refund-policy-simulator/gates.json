@@ -1,0 +1,55 @@
+{
+  "viability_classification": [
+    {
+      "status": "THRIVING",
+      "field": "revenue_margin",
+      "operator": ">=",
+      "value": 55,
+      "color": "#00AA00",
+      "icon": "✓"
+    },
+    {
+      "status": "STABLE",
+      "field": "revenue_margin",
+      "operator": ">=",
+      "value": 42,
+      "color": "#88AA00",
+      "icon": "~"
+    },
+    {
+      "status": "COMPRESSED",
+      "field": "revenue_margin",
+      "operator": ">=",
+      "value": 28,
+      "color": "#AAAA00",
+      "icon": "!"
+    },
+    {
+      "status": "CRITICAL",
+      "field": "revenue_margin",
+      "operator": ">",
+      "value": 15,
+      "color": "#AA0000",
+      "icon": "✗"
+    },
+    {
+      "status": "MODEL_COLLAPSES",
+      "field": "revenue_margin",
+      "operator": "<=",
+      "value": 15,
+      "color": "#000000",
+      "icon": "☠"
+    }
+  ],
+  "structural_override": {
+    "description": "Structural rules like trust erosion and revenue collapse cannot be overridden",
+    "enforcement": "mandatory"
+  },
+  "sustainability_threshold": 25,
+  "collapse_visual": {
+    "background": "#1a1a1a",
+    "text": "#ffffff",
+    "border": "#ff0000",
+    "label": "AUTO-REFUND SYSTEM COLLAPSED"
+  }
+}

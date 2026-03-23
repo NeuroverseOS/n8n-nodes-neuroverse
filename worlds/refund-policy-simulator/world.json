@@ -1,0 +1,10 @@
+{
+  "world_id": "refund-policy-simulator",
+  "name": "Auto-Refund Policy Simulator",
+  "version": "1.0.0",
+  "description": "Models the behavioral impact of enabling AI-powered automatic refunds. Tracks how trust, abuse rates, and revenue interact over time under different assumptions.",
+  "runtime_mode": "SIMULATION",
+  "default_assumption_profile": "expected",
+  "default_alternative_profile": "worst_case",
+  "thesis": "Enabling AI auto-refunds under $100 creates a feedback loop: easy refunds attract abuse, abuse erodes trust, trust erosion drives more escalations, and escalations consume the margin the automation was supposed to save. The question is not IF this happens — but WHEN, and under what conditions it becomes irreversible."
+}

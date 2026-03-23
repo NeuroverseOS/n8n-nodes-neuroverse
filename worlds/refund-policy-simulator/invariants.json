@@ -1,0 +1,20 @@
+[
+  {
+    "id": "revenue-must-survive",
+    "label": "Revenue Margin Must Remain Viable",
+    "enforcement": "structural",
+    "mutable": false
+  },
+  {
+    "id": "trust-cannot-be-zero",
+    "label": "Customer Trust Cannot Reach Zero",
+    "enforcement": "structural",
+    "mutable": false
+  },
+  {
+    "id": "abuse-must-be-bounded",
+    "label": "Abuse Rate Must Have an Upper Bound",
+    "enforcement": "structural",
+    "mutable": false
+  }
+]

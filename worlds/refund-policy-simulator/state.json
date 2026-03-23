@@ -1,0 +1,100 @@
+{
+  "variables": {
+    "trust_score": {
+      "type": "number",
+      "min": 0,
+      "max": 100,
+      "default": 75,
+      "mutable": true,
+      "label": "Customer Trust",
+      "description": "How much customers trust the system to be fair and responsive (0-100).",
+      "display_as": "percentage"
+    },
+    "refund_rate": {
+      "type": "number",
+      "min": 0,
+      "max": 100,
+      "default": 12,
+      "mutable": true,
+      "label": "Refund Rate",
+      "description": "Percentage of transactions that result in a refund request.",
+      "display_as": "percentage"
+    },
+    "abuse_rate": {
+      "type": "number",
+      "min": 0,
+      "max": 100,
+      "default": 3,
+      "mutable": true,
+      "label": "Abuse Rate",
+      "description": "Percentage of refund requests that are fraudulent or abusive.",
+      "display_as": "percentage"
+    },
+    "customer_satisfaction": {
+      "type": "number",
+      "min": 0,
+      "max": 100,
+      "default": 70,
+      "mutable": true,
+      "label": "Customer Satisfaction",
+      "description": "Overall customer satisfaction with the refund experience (0-100).",
+      "display_as": "percentage"
+    },
+    "revenue_margin": {
+      "type": "number",
+      "min": 0,
+      "max": 100,
+      "default": 65,
+      "mutable": true,
+      "label": "Revenue Margin",
+      "description": "Net revenue margin after accounting for refund costs and operational overhead.",
+      "display_as": "percentage"
+    },
+    "escalation_rate": {
+      "type": "number",
+      "min": 0,
+      "max": 100,
+      "default": 8,
+      "mutable": true,
+      "label": "Escalation Rate",
+      "description": "Percentage of refund cases that require human intervention.",
+      "display_as": "percentage"
+    },
+    "auto_resolve_rate": {
+      "type": "number",
+      "min": 0,
+      "max": 100,
+      "default": 0,
+      "mutable": true,
+      "label": "Auto-Resolve Rate",
+      "description": "Percentage of refunds handled entirely by AI without human review.",
+      "display_as": "percentage"
+    }
+  },
+  "presets": {
+    "current_baseline": {
+      "description": "Current state before enabling auto-refunds",
+      "values": {
+        "trust_score": 75,
+        "refund_rate": 12,
+        "abuse_rate": 3,
+        "customer_satisfaction": 70,
+        "revenue_margin": 65,
+        "escalation_rate": 8,
+        "auto_resolve_rate": 0
+      }
+    },
+    "already_stressed": {
+      "description": "System already under pressure from high refund volume",
+      "values": {
+        "trust_score": 55,
+        "refund_rate": 25,
+        "abuse_rate": 10,
+        "customer_satisfaction": 50,
+        "revenue_margin": 45,
+        "escalation_rate": 20,
+        "auto_resolve_rate": 0
+      }
+    }
+  }
+}

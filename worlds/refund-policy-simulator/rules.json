@@ -1,0 +1,211 @@
+[
+  {
+    "id": "rule-auto-refund-activation",
+    "severity": "advantage",
+    "label": "Auto-Refund Activation",
+    "description": "When auto-refunds are enabled, resolution rate jumps immediately and satisfaction gets a boost.",
+    "order": 1,
+    "triggers": [
+      { "field": "auto_resolve_rate", "operator": ">=", "value": 1, "source": "state" }
+    ],
+    "effects": [
+      { "target": "customer_satisfaction", "operation": "add_dynamic", "value": 0, "value_formula": "satisfaction_boost" }
+    ],
+    "effects_conditional": [
+      {
+        "condition": { "field": "customer_satisfaction", "operator": "<", "value": 95, "source": "state" },
+        "effects": [
+          { "target": "customer_satisfaction", "operation": "add", "value": 0 }
+        ]
+      }
+    ],
+    "causal_translation": {
+      "trigger_text": "Auto-refund system is active",
+      "rule_text": "Instant refunds improve customer experience — people love not waiting",
+      "shift_text": "Customers get faster resolution, satisfaction improves",
+      "effect_text": "Customer satisfaction increases by the profile's satisfaction boost per step"
+    }
+  },
+  {
+    "id": "rule-refund-volume-growth",
+    "severity": "degradation",
+    "label": "Refund Volume Growth",
+    "description": "Easy refunds attract more refund requests. The easier the process, the more people use it.",
+    "order": 2,
+    "triggers": [
+      { "field": "auto_resolve_rate", "operator": ">", "value": 0, "source": "state" }
+    ],
+    "effects": [
+      { "target": "refund_rate", "operation": "multiply_dynamic", "value": 0, "value_formula": "refund_growth_factor" }
+    ],
+    "causal_translation": {
+      "trigger_text": "Auto-refunds are processing without human review",
+      "rule_text": "Low-friction refunds increase total refund volume — both legitimate and opportunistic",
+      "shift_text": "More customers request refunds because the barrier is gone",
+      "effect_text": "Refund rate grows by the profile's growth factor each step"
+    }
+  },
+  {
+    "id": "rule-abuse-growth",
+    "severity": "degradation",
+    "label": "Abuse Rate Escalation",
+    "description": "When refunds are automated, bad actors learn the system is exploitable. Abuse grows exponentially.",
+    "order": 3,
+    "triggers": [
+      { "field": "auto_resolve_rate", "operator": ">", "value": 30, "source": "state" }
+    ],
+    "effects": [
+      { "target": "abuse_rate", "operation": "multiply_dynamic", "value": 0, "value_formula": "abuse_growth_factor" }
+    ],
+    "causal_translation": {
+      "trigger_text": "More than 30% of refunds are auto-resolved without human oversight",
+      "rule_text": "Automated systems without oversight are exploitable — bad actors find and share the loophole",
+      "shift_text": "Word spreads that refunds are rubber-stamped. Abuse accelerates.",
+      "effect_text": "Abuse rate multiplies by the profile's abuse growth factor each step"
+    }
+  },
+  {
+    "id": "rule-trust-erosion",
+    "severity": "structural",
+    "label": "Trust Erosion from Abuse",
+    "description": "When abuse is visible (high abuse rate), legitimate customers lose faith in the system's fairness.",
+    "order": 4,
+    "triggers": [
+      { "field": "abuse_rate", "operator": ">=", "value": 8, "source": "assumption" }
+    ],
+    "effects": [
+      { "target": "trust_score", "operation": "multiply", "value": 0.90 }
+    ],
+    "causal_translation": {
+      "trigger_text": "Abuse rate crosses the trust erosion threshold",
+      "rule_text": "When customers see others gaming the system, they question whether the company is in control",
+      "shift_text": "Social proof of abuse undermines trust in the refund process",
+      "effect_text": "Trust score drops by 10% each step abuse remains above threshold"
+    }
+  },
+  {
+    "id": "rule-satisfaction-decay",
+    "severity": "degradation",
+    "label": "Satisfaction Decay from Distrust",
+    "description": "When trust falls, satisfaction follows. People don't like doing business with companies they don't trust.",
+    "order": 5,
+    "triggers": [
+      { "field": "trust_score", "operator": "<", "value": 55, "source": "state" }
+    ],
+    "effects": [
+      { "target": "customer_satisfaction", "operation": "multiply", "value": 0.92 }
+    ],
+    "causal_translation": {
+      "trigger_text": "Trust drops below 55",
+      "rule_text": "Low trust poisons the entire customer relationship — not just refunds",
+      "shift_text": "Customers become skeptical of all interactions, not just refund-related ones",
+      "effect_text": "Customer satisfaction decays by 8% per step while trust is low"
+    }
+  },
+  {
+    "id": "rule-escalation-spike",
+    "severity": "degradation",
+    "label": "Escalation Spike",
+    "description": "Distrust drives customers to demand human agents, overwhelming the escalation queue.",
+    "order": 6,
+    "triggers": [
+      { "field": "trust_score", "operator": "<", "value": 50, "source": "state" }
+    ],
+    "effects": [
+      { "target": "escalation_rate", "operation": "add_dynamic", "value": 0, "value_formula": "escalation_from_distrust" }
+    ],
+    "causal_translation": {
+      "trigger_text": "Trust drops below 50",
+      "rule_text": "Customers who don't trust the AI refuse to use it — they escalate to humans",
+      "shift_text": "The automation that was supposed to save costs now generates MORE human work",
+      "effect_text": "Escalation rate increases by the profile's distrust escalation factor each step"
+    }
+  },
+  {
+    "id": "rule-revenue-erosion",
+    "severity": "structural",
+    "label": "Revenue Margin Erosion",
+    "description": "High refund rates directly erode revenue. Every auto-approved refund is money out the door.",
+    "order": 7,
+    "triggers": [
+      { "field": "refund_rate", "operator": ">=", "value": 15, "source": "assumption" }
+    ],
+    "effects": [
+      { "target": "revenue_margin", "operation": "multiply_dynamic", "value": 0, "value_formula": "margin_erosion_factor" }
+    ],
+    "causal_translation": {
+      "trigger_text": "Refund rate exceeds the revenue collapse threshold",
+      "rule_text": "Refunds are a direct cost — high refund volume eats margin regardless of whether they're legitimate",
+      "shift_text": "The CFO starts asking questions about the auto-refund experiment",
+      "effect_text": "Revenue margin shrinks by the margin erosion factor each step"
+    }
+  },
+  {
+    "id": "rule-cascade-abuse-to-refunds",
+    "severity": "structural",
+    "label": "Abuse-Refund Cascade",
+    "description": "High abuse rates cause even more refund requests as the system loses credibility and people pile on.",
+    "order": 8,
+    "triggers": [
+      { "field": "abuse_rate", "operator": ">=", "value": 15, "source": "assumption" }
+    ],
+    "effects": [
+      { "target": "refund_rate", "operation": "multiply", "value": 1.2 },
+      { "target": "auto_resolve_rate", "operation": "multiply", "value": 1.1 }
+    ],
+    "causal_translation": {
+      "trigger_text": "Abuse rate crosses the cascade threshold — system is being actively gamed",
+      "rule_text": "Abuse begets abuse. Once a system is known to be exploitable, exploitation accelerates.",
+      "shift_text": "The refund system enters a doom loop: abuse → more refunds → more abuse",
+      "effect_text": "Refund rate jumps 20% and auto-resolve volume increases 10% as the system struggles"
+    }
+  },
+  {
+    "id": "rule-trust-recovery",
+    "severity": "advantage",
+    "label": "Trust Recovery",
+    "description": "When abuse is under control, trust slowly recovers as customers see the system working fairly.",
+    "order": 9,
+    "triggers": [
+      { "field": "abuse_rate", "operator": "<", "value": 8, "source": "assumption" },
+      { "field": "trust_score", "operator": "<", "value": 75, "source": "state" }
+    ],
+    "effects": [
+      { "target": "trust_score", "operation": "multiply_dynamic", "value": 0, "value_formula": "trust_recovery_rate" }
+    ],
+    "exclusive_with": "rule-trust-erosion",
+    "causal_translation": {
+      "trigger_text": "Abuse is below the trust erosion threshold and trust hasn't fully recovered",
+      "rule_text": "Trust recovers slowly when the system demonstrates fairness consistently",
+      "shift_text": "Customers start to believe the system works again",
+      "effect_text": "Trust recovers at the profile's recovery rate — but much slower than it was lost"
+    }
+  },
+  {
+    "id": "rule-system-collapse",
+    "severity": "structural",
+    "label": "System Collapse",
+    "description": "When revenue margin, trust, and satisfaction all crater simultaneously, the system is unsalvageable.",
+    "order": 10,
+    "triggers": [
+      { "field": "revenue_margin", "operator": "<", "value": 25, "source": "state" },
+      { "field": "trust_score", "operator": "<", "value": 30, "source": "state" }
+    ],
+    "effects": [
+      { "target": "customer_satisfaction", "operation": "multiply", "value": 0.5 },
+      { "target": "auto_resolve_rate", "operation": "set", "value": 0 }
+    ],
+    "collapse_check": {
+      "field": "revenue_margin",
+      "operator": "<",
+      "value": 15,
+      "result": "MODEL_COLLAPSES"
+    },
+    "causal_translation": {
+      "trigger_text": "Revenue margin below 25% AND trust below 30 — the system is in freefall",
+      "rule_text": "When both financial viability and customer trust are gone, there is nothing left to save",
+      "shift_text": "Auto-refunds are emergency disabled. Damage control begins.",
+      "effect_text": "Satisfaction halves. Auto-resolve is shut off. If margin hits 15%, the model collapses entirely."
+    }
+  }
+]

@@ -1,0 +1,81 @@
+{
+  "computed_outcomes": [
+    {
+      "id": "revenue_margin",
+      "type": "number",
+      "range": [0, 100],
+      "display_as": "percentage",
+      "label": "Revenue Margin",
+      "primary": true,
+      "initial_value": "65",
+      "assignment": "rule",
+      "show_in_comparison": true,
+      "structural_indicator": true
+    },
+    {
+      "id": "trust_score",
+      "type": "number",
+      "range": [0, 100],
+      "display_as": "percentage",
+      "label": "Customer Trust",
+      "primary": false,
+      "initial_value": "75",
+      "assignment": "rule",
+      "show_in_comparison": true,
+      "structural_indicator": true
+    },
+    {
+      "id": "customer_satisfaction",
+      "type": "number",
+      "range": [0, 100],
+      "display_as": "percentage",
+      "label": "Customer Satisfaction",
+      "primary": false,
+      "initial_value": "70",
+      "assignment": "rule",
+      "show_in_comparison": true,
+      "structural_indicator": false
+    },
+    {
+      "id": "abuse_rate",
+      "type": "number",
+      "range": [0, 100],
+      "display_as": "percentage",
+      "label": "Abuse Rate",
+      "primary": false,
+      "initial_value": "3",
+      "assignment": "rule",
+      "show_in_comparison": true,
+      "structural_indicator": true
+    },
+    {
+      "id": "refund_rate",
+      "type": "number",
+      "range": [0, 100],
+      "display_as": "percentage",
+      "label": "Refund Rate",
+      "primary": false,
+      "initial_value": "12",
+      "assignment": "rule",
+      "show_in_comparison": true,
+      "structural_indicator": false
+    },
+    {
+      "id": "escalation_rate",
+      "type": "number",
+      "range": [0, 100],
+      "display_as": "percentage",
+      "label": "Escalation Rate",
+      "primary": false,
+      "initial_value": "8",
+      "assignment": "rule",
+      "show_in_comparison": true,
+      "structural_indicator": false
+    }
+  ],
+  "comparison_layout": {
+    "primary_card": "revenue_margin",
+    "status_badge": "viability_status",
+    "structural_indicators": ["trust_score", "abuse_rate", "revenue_margin"]
+  }
+}
