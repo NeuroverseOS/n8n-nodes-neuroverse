@@ -1,0 +1,1 @@
+{"version":3,"file":"NeuroVerseSimulate.node.d.ts","sourceRoot":"","sources":["../../../nodes/NeuroVerseSimulate/NeuroVerseSimulate.node.ts"],"names":[],"mappings":"AAAA,OAAO,EACL,iBAAiB,EACjB,kBAAkB,EAClB,SAAS,EACT,oBAAoB,EAErB,MAAM,cAAc,CAAC;AAoDtB,qBAAa,kBAAmB,YAAW,SAAS;IAClD,WAAW,EAAE,oBAAoB,CAuG/B;IAEI,OAAO,CAAC,IAAI,EAAE,iBAAiB,GAAG,OAAO,CAAC,kBAAkB,EAAE,EAAE,CAAC;CAuHxE"}
