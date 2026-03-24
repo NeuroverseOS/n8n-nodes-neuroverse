@@ -269,100 +269,224 @@ function scanContentAgainstImmutableGuards(
 
 // ─── Narrative Generation ────────────────────────────────────────────────────
 
-function buildGuardNarrative(
+/** Extract human-readable context from the loaded world object */
+function extractWorldContext(world: any): {
+  name: string;
+  description: string;
+  thesis: string;
+  guardDescriptions: Record<string, { label: string; description: string }>;
+  invariantDescriptions: Record<string, { label: string; description: string }>;
+} {
+  const worldJson = world?.world ?? world ?? {};
+  const guardsArr: any[] = world?.guards?.guards ?? [];
+  const invariantsArr: any[] = world?.invariants ?? [];
+
+  const guardDescriptions: Record<string, { label: string; description: string }> = {};
+  for (const g of guardsArr) {
+    if (g?.id) {
+      guardDescriptions[g.id] = { label: g.label ?? g.id, description: g.description ?? '' };
+    }
+  }
+
+  const invariantDescriptions: Record<string, { label: string; description: string }> = {};
+  for (const inv of invariantsArr) {
+    if (inv?.id) {
+      invariantDescriptions[inv.id] = { label: inv.label ?? inv.id, description: inv.description ?? '' };
+    }
+  }
+
+  return {
+    name: worldJson.name ?? worldJson.world_id ?? 'Unknown',
+    description: worldJson.description ?? '',
+    thesis: worldJson.thesis ?? '',
+    guardDescriptions,
+    invariantDescriptions,
+  };
+}
+
+/** Build a prompt for AI narrative of a guard decision */
+function buildGuardNarrativePrompt(
+  worldCtx: ReturnType<typeof extractWorldContext>,
   verdict: GuardVerdict,
-  evidence: any,
-  trace: any,
   resolvedIntent: string,
   tool: string,
-  intentSource: string,
+  trace: any,
+  evidence: any,
   contentScanOverride: boolean,
   toolIsKnown: boolean,
+): string {
+  const matchedGuards = (trace?.guardChecks ?? [])
+    .filter((gc: any) => gc.matched || gc.triggered)
+    .map((gc: any) => {
+      const id = gc.guardId ?? gc.id;
+      const desc = worldCtx.guardDescriptions[id];
+      return desc ? `- ${desc.label}: ${desc.description}` : `- ${gc.label ?? id}`;
+    })
+    .join('\n');
+
+  const failedInvariants = (trace?.invariantChecks ?? [])
+    .filter((ic: any) => !ic.satisfied)
+    .map((ic: any) => {
+      const id = ic.invariantId ?? ic.id;
+      const desc = worldCtx.invariantDescriptions[id];
+      return desc ? `- ${desc.label}: ${desc.description}` : `- ${ic.label ?? id}`;
+    })
+    .join('\n');
+
+  return `You are interpreting a governance guard decision for a business user who needs to understand what happened and why.
+
+## The World
+Name: ${worldCtx.name}
+Description: ${worldCtx.description}
+${worldCtx.thesis ? `\nThesis: ${worldCtx.thesis}` : ''}
+
+## The Action
+Intent: ${resolvedIntent}
+${tool ? `Tool: ${tool}` : ''}
+${!toolIsKnown && tool ? `(This tool is NOT recognized by the policy — evaluated with maximum scrutiny)` : ''}
+
+## The Decision
+Verdict: ${verdict.status}
+${verdict.reason ? `Reason: ${verdict.reason}` : ''}
+${contentScanOverride ? '\nNote: The agent\'s intent was acceptable, but the actual content contained policy-violating material.' : ''}
+
+${matchedGuards ? `## Guards That Matched\n${matchedGuards}` : '## No guards matched this action.'}
+${failedInvariants ? `\n## Failed Invariants\n${failedInvariants}` : ''}
+
+## Your Task
+Write a clear, direct explanation (3-5 sentences) that tells the reader:
+1. What the agent tried to do and whether it was allowed
+2. WHY — in terms a business person understands (not "guard X matched pattern Y")
+3. What the implications are — what should happen next
+
+Write as if explaining to someone who manages the team using this AI agent. No headers, no bullet points, no JSON.`;
+}
+
+/** Call an AI provider for narrative generation */
+async function callAIForNarrative(
+  prompt: string,
+  provider: string,
+  model: string,
+  apiKey: string,
+  endpoint: string,
+): Promise<string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+  let url: string;
+  let body: string;
+
+  if (provider === 'anthropic') {
+    url = endpoint || 'https://api.anthropic.com/v1/messages';
+    headers['x-api-key'] = apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+    body = JSON.stringify({
+      model: model || 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }],
+    });
+  } else if (provider === 'ollama') {
+    url = (endpoint || 'http://localhost:11434') + '/api/chat';
+    body = JSON.stringify({
+      model: model || 'llama3',
+      messages: [{ role: 'user', content: prompt }],
+      stream: false,
+    });
+  } else {
+    url = (endpoint || 'https://api.openai.com/v1') + '/chat/completions';
+    headers['Authorization'] = `Bearer ${apiKey}`;
+    body = JSON.stringify({
+      model: model || 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1024,
+    });
+  }
+
+  const response = await fetch(url, { method: 'POST', headers, body });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`AI narrative call failed (${response.status}): ${text.substring(0, 200)}`);
+  }
+
+  const json = await response.json() as any;
+
+  if (provider === 'anthropic') {
+    return json.content?.[0]?.text ?? '';
+  } else if (provider === 'ollama') {
+    return json.message?.content ?? '';
+  } else {
+    return json.choices?.[0]?.message?.content ?? '';
+  }
+}
+
+/** Fallback: template-based narrative using world context */
+function buildFallbackGuardNarrative(
+  worldCtx: ReturnType<typeof extractWorldContext>,
+  verdict: GuardVerdict,
+  resolvedIntent: string,
+  tool: string,
+  trace: any,
+  evidence: any,
+  contentScanOverride: boolean,
+  toolIsKnown: boolean,
+  intentSource: string,
 ): string[] {
   const lines: string[] = [];
-  const status = verdict.status;
 
-  // Opening — what happened
-  if (status === 'ALLOW') {
+  // Opening — what happened in context of the world
+  if (worldCtx.description) {
+    lines.push(`In the context of "${worldCtx.name}" (${worldCtx.description}):`);
+  }
+
+  if (verdict.status === 'ALLOW') {
     lines.push(`The action "${resolvedIntent}" was allowed${tool ? ` via ${tool}` : ''}.`);
-  } else if (status === 'BLOCK') {
+  } else if (verdict.status === 'BLOCK') {
     lines.push(`The action "${resolvedIntent}" was blocked${tool ? ` via ${tool}` : ''}.`);
-  } else if (status === 'PAUSE') {
+  } else if (verdict.status === 'PAUSE') {
     lines.push(`The action "${resolvedIntent}" was paused for human review${tool ? ` via ${tool}` : ''}.`);
   }
 
-  // Why — the reason
   if (verdict.reason) {
     lines.push(verdict.reason);
   }
 
-  // Content scan override narrative
   if (contentScanOverride) {
-    lines.push(
-      'Although the agent\'s intent was acceptable, the actual content of the message contained policy-violating material. The intent passed but the content was blocked.',
-    );
+    lines.push('The agent\'s intent was acceptable, but the actual content contained policy-violating material.');
   }
 
-  // Unknown tool narrative
   if (!toolIsKnown && tool) {
-    lines.push(
-      `The tool "${tool}" is not recognized by this world's policy. The system evaluated against all known tool surfaces and applied the strictest result. This is a fail-closed behavior — unknown tools are treated with maximum scrutiny.`,
-    );
+    lines.push(`The tool "${tool}" is not recognized by this policy. Unknown tools are evaluated with maximum scrutiny.`);
   }
 
-  // Intent classification narrative
-  if (intentSource === 'ai') {
-    lines.push('The intent was classified by AI before evaluation — the raw text was interpreted to determine the true action.');
-  } else if (intentSource === 'fallback') {
-    lines.push('AI classification failed, so the raw intent text was used directly. This may lead to less precise guard matching.');
-  }
-
-  // Guard evaluation summary
+  // Guard matches with descriptions from the world
   if (trace?.guardChecks?.length) {
     const matched = trace.guardChecks.filter((gc: any) => gc.matched || gc.triggered);
-    const total = trace.guardChecks.length;
-    if (matched.length === 0) {
-      lines.push(`${total} guard${total > 1 ? 's were' : ' was'} evaluated — none matched this action.`);
-    } else {
-      const matchLabels = matched.map((gc: any) => `"${gc.label || gc.guardId || gc.id}"`).slice(0, 3);
-      lines.push(
-        `${total} guard${total > 1 ? 's were' : ' was'} evaluated; ${matched.length} matched: ${matchLabels.join(', ')}${matched.length > 3 ? ` and ${matched.length - 3} more` : ''}.`,
-      );
+    for (const gc of matched.slice(0, 3)) {
+      const id = gc.guardId ?? gc.id;
+      const desc = worldCtx.guardDescriptions[id];
+      if (desc?.description) {
+        lines.push(`Guard "${desc.label}": ${desc.description}`);
+      }
     }
   }
 
-  // Invariant coverage
+  // Failed invariants
   const invSatisfied = evidence?.invariantsSatisfied;
   const invTotal = evidence?.invariantsTotal;
-  if (invTotal != null && invTotal > 0) {
-    if (invSatisfied === invTotal) {
-      lines.push(`All ${invTotal} invariants are satisfied.`);
-    } else {
-      const failed = invTotal - (invSatisfied ?? 0);
-      lines.push(`${failed} of ${invTotal} invariant${failed > 1 ? 's are' : ' is'} not satisfied — these represent hard constraints that should always hold.`);
-
-      // Name the failed invariants if we have trace
-      if (trace?.invariantChecks?.length) {
-        const failedChecks = trace.invariantChecks.filter((ic: any) => !ic.satisfied);
-        if (failedChecks.length > 0) {
-          const names = failedChecks.map((ic: any) => `"${ic.label || ic.invariantId || ic.id}"`).slice(0, 3);
-          lines.push(`Failed invariants: ${names.join(', ')}.`);
+  if (invTotal != null && invTotal > 0 && invSatisfied !== invTotal) {
+    if (trace?.invariantChecks?.length) {
+      const failed = trace.invariantChecks.filter((ic: any) => !ic.satisfied);
+      for (const ic of failed.slice(0, 3)) {
+        const id = ic.invariantId ?? ic.id;
+        const desc = worldCtx.invariantDescriptions[id];
+        if (desc?.description) {
+          lines.push(`Invariant violated — "${desc.label}": ${desc.description}`);
         }
       }
     }
   }
 
-  // Warning narrative
-  if ((verdict as any).warning) {
-    lines.push(`Advisory warning: ${(verdict as any).warning}`);
-  }
-
-  // Precedence narrative
-  if (trace?.precedenceResolution) {
-    const pr = trace.precedenceResolution;
-    lines.push(
-      `The final decision came from the ${pr.decidingLayer} layer (rule: ${pr.decidingId ?? 'default'}, strategy: ${pr.strategy ?? 'strictest-wins'}).`,
-    );
+  if (intentSource === 'ai') {
+    lines.push('The intent was classified by AI before evaluation.');
   }
 
   return lines;
@@ -579,6 +703,55 @@ export class NeuroVerseGuard implements INodeType {
         default: false,
         description:
           'When enabled, BLOCK verdicts throw a node error and stop the workflow entirely. Prevents downstream nodes from ignoring governance decisions.',
+      },
+      // ─── AI Narrative ──────────────────────────────────────────
+      {
+        displayName: 'AI Narrative',
+        name: 'aiNarrative',
+        type: 'boolean' as const,
+        default: false,
+        description:
+          'Use an AI model to explain the guard decision in plain language. The AI reads the world\'s purpose, guard descriptions, and the verdict to produce a narrative a business person can act on.',
+      },
+      {
+        displayName: 'Narrative AI Provider',
+        name: 'narrativeAiProvider',
+        type: 'options' as const,
+        options: [
+          { name: 'OpenAI', value: 'openai' },
+          { name: 'Anthropic', value: 'anthropic' },
+          { name: 'Ollama (Local)', value: 'ollama' },
+        ],
+        default: 'openai',
+        description: 'Which AI provider to use for narrative generation.',
+        displayOptions: { show: { aiNarrative: [true] } },
+      },
+      {
+        displayName: 'Narrative AI Model',
+        name: 'narrativeAiModel',
+        type: 'string' as const,
+        default: 'gpt-4.1-mini',
+        placeholder: 'gpt-4.1-mini',
+        description: 'Model ID. A fast, cheap model works well — this is a single interpretation call.',
+        displayOptions: { show: { aiNarrative: [true] } },
+      },
+      {
+        displayName: 'Narrative AI API Key',
+        name: 'narrativeAiApiKey',
+        type: 'string' as const,
+        typeOptions: { password: true },
+        default: '',
+        description: 'API key for narrative AI. Not required for Ollama. Uses the same key as AI Classification if left empty.',
+        displayOptions: { show: { aiNarrative: [true] } },
+      },
+      {
+        displayName: 'Narrative AI Endpoint (Override)',
+        name: 'narrativeAiEndpoint',
+        type: 'string' as const,
+        default: '',
+        placeholder: 'http://localhost:11434',
+        description: 'Custom API endpoint for narrative AI. Required for Ollama.',
+        displayOptions: { show: { aiNarrative: [true] } },
       },
       // ─── Additional Fields ────────────────────────────────────────
       {
@@ -934,16 +1107,39 @@ export class NeuroVerseGuard implements INodeType {
       }
 
       // ─── Narrative ──────────────────────────────────────────────
-      insights.narrative = buildGuardNarrative(
-        verdict,
-        evidence,
-        trace,
-        event.intent as string,
-        tool,
-        intentSource,
-        contentScanOverride,
-        toolIsKnown,
-      );
+      const worldCtx = extractWorldContext(world);
+      const aiNarrative = this.getNodeParameter('aiNarrative', i, false) as boolean;
+      let narrativeSource: 'ai' | 'fallback' = 'fallback';
+
+      if (aiNarrative) {
+        // Use narrative-specific AI config, falling back to classification AI config
+        const nProvider = this.getNodeParameter('narrativeAiProvider', i, 'openai') as string;
+        const nModel = this.getNodeParameter('narrativeAiModel', i, 'gpt-4.1-mini') as string;
+        const nApiKey = this.getNodeParameter('narrativeAiApiKey', i, '') as string
+          || (aiClassification ? this.getNodeParameter('aiApiKey', i, '') as string : '');
+        const nEndpoint = this.getNodeParameter('narrativeAiEndpoint', i, '') as string;
+
+        const narrativePrompt = buildGuardNarrativePrompt(
+          worldCtx, verdict, event.intent as string, tool, trace, evidence, contentScanOverride, toolIsKnown,
+        );
+
+        try {
+          insights.narrative = await callAIForNarrative(narrativePrompt, nProvider, nModel, nApiKey, nEndpoint);
+          narrativeSource = 'ai';
+        } catch (err: any) {
+          insights.narrative = buildFallbackGuardNarrative(
+            worldCtx, verdict, event.intent as string, tool, trace, evidence, contentScanOverride, toolIsKnown, intentSource,
+          );
+          (insights.narrative as string[]).push(`(AI narrative unavailable: ${err.message?.substring(0, 100) ?? 'unknown error'})`);
+        }
+      } else {
+        insights.narrative = buildFallbackGuardNarrative(
+          worldCtx, verdict, event.intent as string, tool, trace, evidence, contentScanOverride, toolIsKnown, intentSource,
+        );
+      }
+      insights.narrativeSource = narrativeSource;
+      insights.worldDescription = worldCtx.description || null;
+      insights.thesis = worldCtx.thesis || null;
 
       const outputItem: INodeExecutionData = {
         json: {

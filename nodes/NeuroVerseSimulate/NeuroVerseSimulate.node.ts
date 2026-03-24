@@ -88,7 +88,186 @@ function viabilityToOutput(status: ViabilityStatus): 0 | 1 | 2 {
 
 // ─── Narrative Generation ────────────────────────────────────────────────────
 
-function buildSimulateNarrative(
+/** Extract human-readable context from the loaded world object */
+function extractWorldContext(world: any): {
+  name: string;
+  description: string;
+  thesis: string;
+  stateLabels: Record<string, { label: string; description: string; display_as?: string }>;
+  ruleCausalTranslations: Record<string, {
+    label: string;
+    description: string;
+    trigger_text: string;
+    rule_text: string;
+    shift_text: string;
+    effect_text: string;
+  }>;
+} {
+  const worldJson = world?.world ?? world ?? {};
+  const stateJson = world?.state ?? {};
+  const rulesArr: any[] = world?.rules ?? [];
+
+  const stateLabels: Record<string, { label: string; description: string; display_as?: string }> = {};
+  const vars = stateJson?.variables ?? stateJson;
+  for (const [key, val] of Object.entries(vars)) {
+    const v = val as any;
+    if (v?.label) {
+      stateLabels[key] = {
+        label: v.label,
+        description: v.description ?? '',
+        display_as: v.display_as,
+      };
+    }
+  }
+
+  const ruleCausalTranslations: Record<string, any> = {};
+  for (const rule of rulesArr) {
+    if (rule?.causal_translation) {
+      ruleCausalTranslations[rule.id] = {
+        label: rule.label ?? rule.id,
+        description: rule.description ?? '',
+        ...rule.causal_translation,
+      };
+    }
+  }
+
+  return {
+    name: worldJson.name ?? worldJson.world_id ?? 'Unknown',
+    description: worldJson.description ?? '',
+    thesis: worldJson.thesis ?? '',
+    stateLabels,
+    ruleCausalTranslations,
+  };
+}
+
+/** Build the prompt sent to the AI for narrative interpretation */
+function buildNarrativePrompt(
+  worldCtx: ReturnType<typeof extractWorldContext>,
+  result: SimulationResult,
+  stateDeltas: Record<string, { from: unknown; to: unknown }>,
+  allRules: Map<string, { ruleId: string; label: string; triggeredSteps: number[]; excludedSteps: number[] }>,
+  profile: string,
+): string {
+  const totalSteps = result.steps.length;
+
+  // State changes with human labels
+  const stateChangeSummary = Object.entries(stateDeltas)
+    .map(([key, d]) => {
+      const meta = worldCtx.stateLabels[key];
+      const label = meta?.label ?? key.replace(/_/g, ' ');
+      const unit = meta?.display_as === 'percentage' ? '%' : '';
+      return `- ${label}: ${d.from}${unit} → ${d.to}${unit}`;
+    })
+    .join('\n');
+
+  // Rules that fired, with their causal translations
+  const firedRules = [...allRules.values()].filter((r) => r.triggeredSteps.length > 0);
+  const ruleNarratives = firedRules
+    .sort((a, b) => a.triggeredSteps[0] - b.triggeredSteps[0])
+    .map((r) => {
+      const ct = worldCtx.ruleCausalTranslations[r.ruleId];
+      if (ct) {
+        return `- "${ct.label}" (steps ${r.triggeredSteps.join(', ')}): ${ct.rule_text} → ${ct.shift_text}`;
+      }
+      return `- "${r.label}" (steps ${r.triggeredSteps.join(', ')})`;
+    })
+    .join('\n');
+
+  // Collapse info
+  const collapseSection = result.collapsed
+    ? `\nCOLLAPSE: The model collapsed at step ${result.collapseStep}. Rule: ${result.collapseRule ?? 'unknown'}. ${worldCtx.ruleCausalTranslations[result.collapseRule ?? '']?.shift_text ?? ''}`
+    : `\nOUTCOME: The system ended at ${result.finalViability} after ${totalSteps} steps. No collapse.`;
+
+  return `You are interpreting the results of a governance simulation for a business user who needs to understand what happened and what it means.
+
+## The World Being Tested
+Name: ${worldCtx.name}
+Description: ${worldCtx.description}
+${worldCtx.thesis ? `\nThesis being tested: ${worldCtx.thesis}` : ''}
+Profile: ${profile || 'default'}
+
+## What Happened (${totalSteps} steps)
+Viability path: ${result.steps.map((s) => s.viability).join(' → ')}
+${collapseSection}
+
+## State Changes
+${stateChangeSummary || '(no changes)'}
+
+## Rules That Fired (in order)
+${ruleNarratives || '(no rules fired)'}
+
+## Your Task
+Write a clear, direct narrative (4-8 sentences) that explains:
+1. What was being tested and why it matters
+2. What happened — in cause-and-effect terms a business person understands
+3. The cascade: how one thing led to another
+4. The bottom line: was the thesis proven? What should the reader take away?
+
+Use the world's own language (the thesis, the causal translations). Do NOT use technical terms like "rule fired" or "step 3" — translate into meaning. Write as if explaining to a VP who needs to make a decision based on this.
+
+Respond with ONLY the narrative paragraphs. No headers, no bullet points, no JSON.`;
+}
+
+/** Call an AI provider for narrative generation */
+async function callAIForNarrative(
+  prompt: string,
+  provider: string,
+  model: string,
+  apiKey: string,
+  endpoint: string,
+): Promise<string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+  let url: string;
+  let body: string;
+
+  if (provider === 'anthropic') {
+    url = endpoint || 'https://api.anthropic.com/v1/messages';
+    headers['x-api-key'] = apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+    body = JSON.stringify({
+      model: model || 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }],
+    });
+  } else if (provider === 'ollama') {
+    url = (endpoint || 'http://localhost:11434') + '/api/chat';
+    body = JSON.stringify({
+      model: model || 'llama3',
+      messages: [{ role: 'user', content: prompt }],
+      stream: false,
+    });
+  } else {
+    // OpenAI (default)
+    url = (endpoint || 'https://api.openai.com/v1') + '/chat/completions';
+    headers['Authorization'] = `Bearer ${apiKey}`;
+    body = JSON.stringify({
+      model: model || 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1024,
+    });
+  }
+
+  const response = await fetch(url, { method: 'POST', headers, body });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`AI narrative call failed (${response.status}): ${text.substring(0, 200)}`);
+  }
+
+  const json = await response.json() as any;
+
+  if (provider === 'anthropic') {
+    return json.content?.[0]?.text ?? '';
+  } else if (provider === 'ollama') {
+    return json.message?.content ?? '';
+  } else {
+    return json.choices?.[0]?.message?.content ?? '';
+  }
+}
+
+/** Fallback: build a basic narrative without AI, using world context */
+function buildFallbackNarrative(
+  worldCtx: ReturnType<typeof extractWorldContext>,
   result: SimulationResult,
   stateDeltas: Record<string, { from: unknown; to: unknown }>,
   allRules: Map<string, { ruleId: string; label: string; triggeredSteps: number[]; excludedSteps: number[] }>,
@@ -96,30 +275,33 @@ function buildSimulateNarrative(
   const lines: string[] = [];
   const totalSteps = result.steps.length;
   const firedRules = [...allRules.values()].filter((r) => r.triggeredSteps.length > 0);
-  const silentRules = [...allRules.values()].filter((r) => r.triggeredSteps.length === 0);
 
-  // Opening — viability trajectory
-  const viabilityPath = result.steps.map((s) => s.viability);
-  const uniqueStates = [...new Set(viabilityPath)];
-  if (uniqueStates.length === 1) {
-    lines.push(`Over ${totalSteps} step${totalSteps > 1 ? 's' : ''}, the system remained ${viabilityPath[0]}.`);
-  } else {
-    lines.push(`The system moved from ${viabilityPath[0]} to ${result.finalViability} over ${totalSteps} step${totalSteps > 1 ? 's' : ''}.`);
+  // Opening — what was tested
+  if (worldCtx.thesis) {
+    lines.push(`This simulation tested the thesis: ${worldCtx.thesis}`);
+  } else if (worldCtx.description) {
+    lines.push(`${worldCtx.name}: ${worldCtx.description}`);
   }
 
-  // Collapse narrative
+  // Outcome
   if (result.collapsed) {
-    const collapseRule = allRules.get(result.collapseRule ?? '');
+    const collapseCtx = worldCtx.ruleCausalTranslations[result.collapseRule ?? ''];
     lines.push(
-      `The model collapsed at step ${result.collapseStep}${collapseRule ? ` due to "${collapseRule.label}"` : ''}.`,
+      `After ${totalSteps} step${totalSteps > 1 ? 's' : ''}, the model collapsed.${collapseCtx ? ` ${collapseCtx.shift_text}` : ''}`,
+    );
+  } else {
+    lines.push(
+      `After ${totalSteps} step${totalSteps > 1 ? 's' : ''}, the system ended at ${result.finalViability}.`,
     );
   }
 
-  // State change narrative — biggest movers
+  // State changes with human labels
   const numericDeltas = Object.entries(stateDeltas)
     .filter(([, d]) => typeof d.from === 'number' && typeof d.to === 'number')
     .map(([key, d]) => ({
       key,
+      label: worldCtx.stateLabels[key]?.label ?? key.replace(/_/g, ' '),
+      unit: worldCtx.stateLabels[key]?.display_as === 'percentage' ? '%' : '',
       from: d.from as number,
       to: d.to as number,
       delta: (d.to as number) - (d.from as number),
@@ -127,50 +309,28 @@ function buildSimulateNarrative(
     .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
 
   if (numericDeltas.length > 0) {
-    const top = numericDeltas.slice(0, 3);
+    const top = numericDeltas.slice(0, 4);
     const descriptions = top.map((d) => {
-      const direction = d.delta > 0 ? 'increased' : 'decreased';
-      const pct = d.from !== 0 ? Math.abs(Math.round((d.delta / d.from) * 100)) : null;
-      const label = d.key.replace(/_/g, ' ');
-      return pct !== null
-        ? `${label} ${direction} ${pct}% (${d.from} → ${d.to})`
-        : `${label} ${direction} from ${d.from} to ${d.to}`;
+      const direction = d.delta > 0 ? 'rose' : 'fell';
+      return `${d.label} ${direction} from ${d.from}${d.unit} to ${d.to}${d.unit}`;
     });
-    lines.push(`Key changes: ${descriptions.join('; ')}.`);
+    lines.push(descriptions.join('. ') + '.');
   }
 
-  // Dominant rules — which rules fired most often
-  if (firedRules.length > 0) {
-    const sorted = [...firedRules].sort((a, b) => b.triggeredSteps.length - a.triggeredSteps.length);
-    const dominant = sorted[0];
-    if (dominant.triggeredSteps.length === totalSteps) {
-      lines.push(`"${dominant.label}" fired every single step — this is the primary driver of state change.`);
-    } else if (dominant.triggeredSteps.length > totalSteps / 2) {
-      lines.push(`"${dominant.label}" fired in ${dominant.triggeredSteps.length} of ${totalSteps} steps, making it the dominant force.`);
-    }
-
-    if (firedRules.length > 1) {
-      const others = sorted.slice(1, 3).map((r) => `"${r.label}" (${r.triggeredSteps.length} steps)`);
-      lines.push(`Other active rules: ${others.join(', ')}.`);
+  // Causal chain — use causal translations
+  const sortedFired = [...firedRules].sort((a, b) => a.triggeredSteps[0] - b.triggeredSteps[0]);
+  for (const rule of sortedFired.slice(0, 4)) {
+    const ct = worldCtx.ruleCausalTranslations[rule.ruleId];
+    if (ct?.rule_text && ct?.shift_text) {
+      lines.push(`${ct.rule_text}. ${ct.shift_text}.`);
     }
   }
 
-  // Silent rules narrative
-  if (silentRules.length > 0 && firedRules.length > 0) {
-    const pct = Math.round((silentRules.length / allRules.size) * 100);
-    lines.push(
-      `${silentRules.length} of ${allRules.size} rules (${pct}%) never triggered — ${silentRules.map((r) => `"${r.label}"`).slice(0, 3).join(', ')}${silentRules.length > 3 ? ` and ${silentRules.length - 3} more` : ''}.`,
-    );
-  }
-
-  // Cascade detection — did one rule's effects trigger another?
-  if (totalSteps > 1 && firedRules.length > 1) {
-    const laterRules = firedRules.filter((r) => r.triggeredSteps[0] > 1);
-    if (laterRules.length > 0) {
-      lines.push(
-        `Cascading effects detected: ${laterRules.map((r) => `"${r.label}" started firing at step ${r.triggeredSteps[0]}`).slice(0, 2).join('; ')}. These were triggered by state changes from earlier rules.`,
-      );
-    }
+  // Bottom line
+  if (result.collapsed && worldCtx.thesis) {
+    lines.push('The thesis was confirmed — the system reached irreversible collapse under these conditions.');
+  } else if (!result.collapsed && result.finalViability === 'STABLE') {
+    lines.push('Under these conditions, the system remained viable.');
   }
 
   return lines;
@@ -335,6 +495,55 @@ export class NeuroVerseSimulate implements INodeType {
         default: false,
         description: 'When enabled, a MODEL_COLLAPSES result throws a node error and stops the workflow entirely.',
       },
+      // ─── AI Narrative ──────────────────────────────────────────
+      {
+        displayName: 'AI Narrative',
+        name: 'aiNarrative',
+        type: 'boolean' as const,
+        default: false,
+        description:
+          'Use an AI model to interpret simulation results in plain language. The AI reads the world\'s thesis, causal logic, and state changes to produce a narrative a business person can act on.',
+      },
+      {
+        displayName: 'AI Provider',
+        name: 'aiProvider',
+        type: 'options' as const,
+        options: [
+          { name: 'OpenAI', value: 'openai' },
+          { name: 'Anthropic', value: 'anthropic' },
+          { name: 'Ollama (Local)', value: 'ollama' },
+        ],
+        default: 'openai',
+        description: 'Which AI provider to use for narrative generation.',
+        displayOptions: { show: { aiNarrative: [true] } },
+      },
+      {
+        displayName: 'AI Model',
+        name: 'aiModel',
+        type: 'string' as const,
+        default: 'gpt-4.1-mini',
+        placeholder: 'gpt-4.1-mini',
+        description: 'Model ID. A fast, cheap model works well — this is a single interpretation call.',
+        displayOptions: { show: { aiNarrative: [true] } },
+      },
+      {
+        displayName: 'AI API Key',
+        name: 'aiApiKey',
+        type: 'string' as const,
+        typeOptions: { password: true },
+        default: '',
+        description: 'API key for the AI provider. Not required for Ollama.',
+        displayOptions: { show: { aiNarrative: [true] } },
+      },
+      {
+        displayName: 'AI Endpoint (Override)',
+        name: 'aiEndpoint',
+        type: 'string' as const,
+        default: '',
+        placeholder: 'http://localhost:11434',
+        description: 'Custom API endpoint. Required for Ollama, optional for OpenAI/Anthropic.',
+        displayOptions: { show: { aiNarrative: [true] } },
+      },
     ],
   };
 
@@ -367,6 +576,7 @@ export class NeuroVerseSimulate implements INodeType {
       const profile = this.getNodeParameter('profile', i, '') as string;
       const stateOverridesRaw = this.getNodeParameter('stateOverrides', i, '') as string;
       const haltOnCollapse = this.getNodeParameter('haltOnCollapse', i, false) as boolean;
+      const aiNarrative = this.getNodeParameter('aiNarrative', i, false) as boolean;
 
       // ─── Load world ─────────────────────────────────────────────
       let cacheKey: string;
@@ -467,6 +677,33 @@ export class NeuroVerseSimulate implements INodeType {
         }
       }
 
+      // ─── Extract world context for narrative + output ────────
+      const worldCtx = extractWorldContext(world);
+
+      // ─── Generate narrative ────────────────────────────────────
+      let narrative: string | string[];
+      let narrativeSource: 'ai' | 'fallback' = 'fallback';
+
+      if (aiNarrative) {
+        const aiProvider = this.getNodeParameter('aiProvider', i) as string;
+        const aiModel = this.getNodeParameter('aiModel', i) as string;
+        const aiApiKey = this.getNodeParameter('aiApiKey', i, '') as string;
+        const aiEndpoint = this.getNodeParameter('aiEndpoint', i, '') as string;
+
+        const prompt = buildNarrativePrompt(worldCtx, result, stateDeltas, allRulesEvaluated, profile);
+
+        try {
+          narrative = await callAIForNarrative(prompt, aiProvider, aiModel, aiApiKey, aiEndpoint);
+          narrativeSource = 'ai';
+        } catch (err: any) {
+          // Fall back to template narrative, include the error
+          narrative = buildFallbackNarrative(worldCtx, result, stateDeltas, allRulesEvaluated);
+          (narrative as string[]).push(`(AI narrative unavailable: ${err.message?.substring(0, 100) ?? 'unknown error'})`);
+        }
+      } else {
+        narrative = buildFallbackNarrative(worldCtx, result, stateDeltas, allRulesEvaluated);
+      }
+
       const outputItem: INodeExecutionData = {
         json: {
           ...items[i].json,
@@ -505,7 +742,10 @@ export class NeuroVerseSimulate implements INodeType {
             })),
           },
           insights: {
-            narrative: buildSimulateNarrative(result, stateDeltas, allRulesEvaluated),
+            narrative,
+            narrativeSource,
+            thesis: worldCtx.thesis || null,
+            worldDescription: worldCtx.description || null,
             stateDeltas,
             totalRulesEvaluated: allRulesEvaluated.size,
             totalRulesFired: [...allRulesEvaluated.values()].filter((r) => r.triggeredSteps.length > 0).length,
