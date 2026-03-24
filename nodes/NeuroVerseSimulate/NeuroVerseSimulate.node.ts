@@ -716,6 +716,7 @@ export class NeuroVerseSimulate implements INodeType {
             profile: result.profile,
             steps: result.steps.length,
             finalViability: result.finalViability,
+            viable: result.finalViability === 'THRIVING' || result.finalViability === 'STABLE',
             collapsed: result.collapsed,
             ...(result.collapsed ? {
               collapseStep: result.collapseStep,
