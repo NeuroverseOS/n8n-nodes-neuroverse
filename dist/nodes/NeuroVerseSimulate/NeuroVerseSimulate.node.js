@@ -613,16 +613,28 @@ class NeuroVerseSimulate {
                     aiInterpretation = `(AI narrative unavailable: ${err.message?.substring(0, 100) ?? 'unknown error'})`;
                 }
             }
+            // ─── Top-level output: what users see first ─────────────
+            const viable = result.finalViability === 'THRIVING' || result.finalViability === 'STABLE';
             const outputItem = {
                 json: {
                     ...items[i].json,
+                    // ── Top-level summary (what you wire into downstream nodes) ──
+                    worldName: result.worldName,
+                    profile: result.profile,
+                    viable,
+                    viability: result.finalViability,
+                    collapsed: result.collapsed,
+                    report: nativeNarrative,
+                    narrative: aiInterpretation ?? contextNarrative,
+                    stateDeltas,
+                    // ── Structured detail (for routing, comparisons, debugging) ──
                     simulation: {
                         worldId: result.worldId,
                         worldName: result.worldName,
                         profile: result.profile,
                         steps: result.steps.length,
                         finalViability: result.finalViability,
-                        viable: result.finalViability === 'THRIVING' || result.finalViability === 'STABLE',
+                        viable,
                         collapsed: result.collapsed,
                         ...(result.collapsed ? {
                             collapseStep: result.collapseStep,

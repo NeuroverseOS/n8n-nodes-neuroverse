@@ -1035,6 +1035,12 @@ class NeuroVerseGuard {
             const outputItem = {
                 json: {
                     ...items[i].json,
+                    // ── Top-level summary (what you wire into downstream nodes) ──
+                    status: verdict.status,
+                    allowed: verdict.status === 'ALLOW',
+                    reason: verdict.reason ?? null,
+                    narrative: insights.narrative ?? null,
+                    // ── Structured detail ──
                     verdict: {
                         status: verdict.status,
                         reason: verdict.reason ?? null,
