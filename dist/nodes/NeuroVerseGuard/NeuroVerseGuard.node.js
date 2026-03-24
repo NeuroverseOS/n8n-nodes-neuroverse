@@ -21,6 +21,19 @@ function getBundledWorldChoices() {
         return [];
     }
 }
+function scanDirectoryForWorlds(dirPath) {
+    try {
+        return (0, fs_1.readdirSync)(dirPath, { withFileTypes: true })
+            .filter((d) => d.isDirectory())
+            .map((d) => ({
+            name: d.name.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+            value: d.name,
+        }));
+    }
+    catch {
+        return [];
+    }
+}
 // ─── Field Name Normalization (Fix 3) ─────────────────────────────────────────
 // extractContentFields recognizes specific key names. Real-world workflows use
 // many synonyms.  Normalize before passing to the governance function.
@@ -221,6 +234,182 @@ function scanContentAgainstImmutableGuards(contentText, world) {
     }
     return { violated: false };
 }
+// ─── Narrative Generation ────────────────────────────────────────────────────
+/** Extract human-readable context from the loaded world object */
+function extractWorldContext(world) {
+    const worldJson = world?.world ?? world ?? {};
+    const guardsArr = world?.guards?.guards ?? [];
+    const invariantsArr = world?.invariants ?? [];
+    const guardDescriptions = {};
+    for (const g of guardsArr) {
+        if (g?.id) {
+            guardDescriptions[g.id] = { label: g.label ?? g.id, description: g.description ?? '' };
+        }
+    }
+    const invariantDescriptions = {};
+    for (const inv of invariantsArr) {
+        if (inv?.id) {
+            invariantDescriptions[inv.id] = { label: inv.label ?? inv.id, description: inv.description ?? '' };
+        }
+    }
+    return {
+        name: worldJson.name ?? worldJson.world_id ?? 'Unknown',
+        description: worldJson.description ?? '',
+        thesis: worldJson.thesis ?? '',
+        guardDescriptions,
+        invariantDescriptions,
+    };
+}
+/** Build a prompt for AI narrative of a guard decision */
+function buildGuardNarrativePrompt(worldCtx, verdict, resolvedIntent, tool, trace, evidence, contentScanOverride, toolIsKnown) {
+    const matchedGuards = (trace?.guardChecks ?? [])
+        .filter((gc) => gc.matched || gc.triggered)
+        .map((gc) => {
+        const id = gc.guardId ?? gc.id;
+        const desc = worldCtx.guardDescriptions[id];
+        return desc ? `- ${desc.label}: ${desc.description}` : `- ${gc.label ?? id}`;
+    })
+        .join('\n');
+    const failedInvariants = (trace?.invariantChecks ?? [])
+        .filter((ic) => !ic.satisfied)
+        .map((ic) => {
+        const id = ic.invariantId ?? ic.id;
+        const desc = worldCtx.invariantDescriptions[id];
+        return desc ? `- ${desc.label}: ${desc.description}` : `- ${ic.label ?? id}`;
+    })
+        .join('\n');
+    return `You are interpreting a governance guard decision for a business user who needs to understand what happened and why.
+
+## The World
+Name: ${worldCtx.name}
+Description: ${worldCtx.description}
+${worldCtx.thesis ? `\nThesis: ${worldCtx.thesis}` : ''}
+
+## The Action
+Intent: ${resolvedIntent}
+${tool ? `Tool: ${tool}` : ''}
+${!toolIsKnown && tool ? `(This tool is NOT recognized by the policy — evaluated with maximum scrutiny)` : ''}
+
+## The Decision
+Verdict: ${verdict.status}
+${verdict.reason ? `Reason: ${verdict.reason}` : ''}
+${contentScanOverride ? '\nNote: The agent\'s intent was acceptable, but the actual content contained policy-violating material.' : ''}
+
+${matchedGuards ? `## Guards That Matched\n${matchedGuards}` : '## No guards matched this action.'}
+${failedInvariants ? `\n## Failed Invariants\n${failedInvariants}` : ''}
+
+## Your Task
+Write a clear, direct explanation (3-5 sentences) that tells the reader:
+1. What the agent tried to do and whether it was allowed
+2. WHY — in terms a business person understands (not "guard X matched pattern Y")
+3. What the implications are — what should happen next
+
+Write as if explaining to someone who manages the team using this AI agent. No headers, no bullet points, no JSON.`;
+}
+/** Call an AI provider for narrative generation */
+async function callAIForNarrative(prompt, provider, model, apiKey, endpoint) {
+    const headers = { 'Content-Type': 'application/json' };
+    let url;
+    let body;
+    if (provider === 'anthropic') {
+        url = endpoint || 'https://api.anthropic.com/v1/messages';
+        headers['x-api-key'] = apiKey;
+        headers['anthropic-version'] = '2023-06-01';
+        body = JSON.stringify({
+            model: model || 'claude-sonnet-4-20250514',
+            max_tokens: 1024,
+            messages: [{ role: 'user', content: prompt }],
+        });
+    }
+    else if (provider === 'ollama') {
+        url = (endpoint || 'http://localhost:11434') + '/api/chat';
+        body = JSON.stringify({
+            model: model || 'llama3',
+            messages: [{ role: 'user', content: prompt }],
+            stream: false,
+        });
+    }
+    else {
+        url = (endpoint || 'https://api.openai.com/v1') + '/chat/completions';
+        headers['Authorization'] = `Bearer ${apiKey}`;
+        body = JSON.stringify({
+            model: model || 'gpt-4.1-mini',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 1024,
+        });
+    }
+    const response = await fetch(url, { method: 'POST', headers, body });
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`AI narrative call failed (${response.status}): ${text.substring(0, 200)}`);
+    }
+    const json = await response.json();
+    if (provider === 'anthropic') {
+        return json.content?.[0]?.text ?? '';
+    }
+    else if (provider === 'ollama') {
+        return json.message?.content ?? '';
+    }
+    else {
+        return json.choices?.[0]?.message?.content ?? '';
+    }
+}
+/** Fallback: template-based narrative using world context */
+function buildFallbackGuardNarrative(worldCtx, verdict, resolvedIntent, tool, trace, evidence, contentScanOverride, toolIsKnown, intentSource) {
+    const lines = [];
+    // Opening — what happened in context of the world
+    if (worldCtx.description) {
+        lines.push(`In the context of "${worldCtx.name}" (${worldCtx.description}):`);
+    }
+    if (verdict.status === 'ALLOW') {
+        lines.push(`The action "${resolvedIntent}" was allowed${tool ? ` via ${tool}` : ''}.`);
+    }
+    else if (verdict.status === 'BLOCK') {
+        lines.push(`The action "${resolvedIntent}" was blocked${tool ? ` via ${tool}` : ''}.`);
+    }
+    else if (verdict.status === 'PAUSE') {
+        lines.push(`The action "${resolvedIntent}" was paused for human review${tool ? ` via ${tool}` : ''}.`);
+    }
+    if (verdict.reason) {
+        lines.push(verdict.reason);
+    }
+    if (contentScanOverride) {
+        lines.push('The agent\'s intent was acceptable, but the actual content contained policy-violating material.');
+    }
+    if (!toolIsKnown && tool) {
+        lines.push(`The tool "${tool}" is not recognized by this policy. Unknown tools are evaluated with maximum scrutiny.`);
+    }
+    // Guard matches with descriptions from the world
+    if (trace?.guardChecks?.length) {
+        const matched = trace.guardChecks.filter((gc) => gc.matched || gc.triggered);
+        for (const gc of matched.slice(0, 3)) {
+            const id = gc.guardId ?? gc.id;
+            const desc = worldCtx.guardDescriptions[id];
+            if (desc?.description) {
+                lines.push(`Guard "${desc.label}": ${desc.description}`);
+            }
+        }
+    }
+    // Failed invariants
+    const invSatisfied = evidence?.invariantsSatisfied;
+    const invTotal = evidence?.invariantsTotal;
+    if (invTotal != null && invTotal > 0 && invSatisfied !== invTotal) {
+        if (trace?.invariantChecks?.length) {
+            const failed = trace.invariantChecks.filter((ic) => !ic.satisfied);
+            for (const ic of failed.slice(0, 3)) {
+                const id = ic.invariantId ?? ic.id;
+                const desc = worldCtx.invariantDescriptions[id];
+                if (desc?.description) {
+                    lines.push(`Invariant violated — "${desc.label}": ${desc.description}`);
+                }
+            }
+        }
+    }
+    if (intentSource === 'ai') {
+        lines.push('The intent was classified by AI before evaluation.');
+    }
+    return lines;
+}
 // ─── Node ─────────────────────────────────────────────────────────────────────
 class NeuroVerseGuard {
     description = {
@@ -250,6 +439,11 @@ class NeuroVerseGuard {
                         description: 'Use a world that ships with this package — zero setup required',
                     },
                     {
+                        name: 'Custom Directory',
+                        value: 'customDir',
+                        description: 'Scan a folder of your own worlds and pick one from a dropdown',
+                    },
+                    {
                         name: 'File Path',
                         value: 'filePath',
                         description: 'Load from a .nv-world.zip file or directory on disk',
@@ -273,6 +467,36 @@ class NeuroVerseGuard {
                 displayOptions: {
                     show: {
                         worldSource: ['bundled'],
+                    },
+                },
+            },
+            {
+                displayName: 'Custom Worlds Directory',
+                name: 'customWorldsDir',
+                type: 'string',
+                default: '',
+                required: true,
+                placeholder: '/data/my-worlds',
+                description: 'Path to a folder containing your world directories. Each subfolder is treated as a world.',
+                displayOptions: {
+                    show: {
+                        worldSource: ['customDir'],
+                    },
+                },
+            },
+            {
+                displayName: 'Custom World',
+                name: 'customWorld',
+                type: 'options',
+                typeOptions: {
+                    loadOptionsMethod: 'getCustomWorldChoices',
+                    loadOptionsDependsOn: ['customWorldsDir'],
+                },
+                default: '',
+                description: 'Select a world from your custom directory. Set the directory path above first, then click the refresh button.',
+                displayOptions: {
+                    show: {
+                        worldSource: ['customDir'],
                     },
                 },
             },
@@ -391,6 +615,54 @@ class NeuroVerseGuard {
                 default: false,
                 description: 'When enabled, BLOCK verdicts throw a node error and stop the workflow entirely. Prevents downstream nodes from ignoring governance decisions.',
             },
+            // ─── AI Narrative ──────────────────────────────────────────
+            {
+                displayName: 'AI Narrative',
+                name: 'aiNarrative',
+                type: 'boolean',
+                default: false,
+                description: 'Use an AI model to explain the guard decision in plain language. The AI reads the world\'s purpose, guard descriptions, and the verdict to produce a narrative a business person can act on.',
+            },
+            {
+                displayName: 'Narrative AI Provider',
+                name: 'narrativeAiProvider',
+                type: 'options',
+                options: [
+                    { name: 'OpenAI', value: 'openai' },
+                    { name: 'Anthropic', value: 'anthropic' },
+                    { name: 'Ollama (Local)', value: 'ollama' },
+                ],
+                default: 'openai',
+                description: 'Which AI provider to use for narrative generation.',
+                displayOptions: { show: { aiNarrative: [true] } },
+            },
+            {
+                displayName: 'Narrative AI Model',
+                name: 'narrativeAiModel',
+                type: 'string',
+                default: 'gpt-4.1-mini',
+                placeholder: 'gpt-4.1-mini',
+                description: 'Model ID. A fast, cheap model works well — this is a single interpretation call.',
+                displayOptions: { show: { aiNarrative: [true] } },
+            },
+            {
+                displayName: 'Narrative AI API Key',
+                name: 'narrativeAiApiKey',
+                type: 'string',
+                typeOptions: { password: true },
+                default: '',
+                description: 'API key for narrative AI. Not required for Ollama. Uses the same key as AI Classification if left empty.',
+                displayOptions: { show: { aiNarrative: [true] } },
+            },
+            {
+                displayName: 'Narrative AI Endpoint (Override)',
+                name: 'narrativeAiEndpoint',
+                type: 'string',
+                default: '',
+                placeholder: 'http://localhost:11434',
+                description: 'Custom API endpoint for narrative AI. Required for Ollama.',
+                displayOptions: { show: { aiNarrative: [true] } },
+            },
             // ─── Additional Fields ────────────────────────────────────────
             {
                 displayName: 'Additional Fields',
@@ -425,6 +697,21 @@ class NeuroVerseGuard {
             },
         ],
     };
+    methods = {
+        loadOptions: {
+            async getCustomWorldChoices() {
+                const customDir = this.getNodeParameter('customWorldsDir', '');
+                if (!customDir) {
+                    return [{ name: '(Set directory path above first)', value: '' }];
+                }
+                const worlds = scanDirectoryForWorlds(customDir);
+                if (worlds.length === 0) {
+                    return [{ name: '(No worlds found in directory)', value: '' }];
+                }
+                return worlds;
+            },
+        },
+    };
     async execute() {
         const items = this.getInputData();
         const allowItems = [];
@@ -444,6 +731,18 @@ class NeuroVerseGuard {
                 const worldName = this.getNodeParameter('bundledWorld', i);
                 cacheKey = `bundled:${worldName}`;
                 const worldDir = (0, path_1.join)(BUNDLED_WORLDS_DIR, worldName);
+                const currentMtime = getDirectoryMtime(worldDir);
+                const cached = worldCache.get(cacheKey);
+                if (!cached || cached.mtime < currentMtime) {
+                    const world = await (0, governance_1.loadWorld)(worldDir);
+                    worldCache.set(cacheKey, { world, mtime: currentMtime });
+                }
+            }
+            else if (worldSource === 'customDir') {
+                const customDir = this.getNodeParameter('customWorldsDir', i);
+                const worldName = this.getNodeParameter('customWorld', i);
+                const worldDir = (0, path_1.join)(customDir, worldName);
+                cacheKey = `custom:${worldDir}`;
                 const currentMtime = getDirectoryMtime(worldDir);
                 const cached = worldCache.get(cacheKey);
                 if (!cached || cached.mtime < currentMtime) {
@@ -571,7 +870,7 @@ class NeuroVerseGuard {
                 if (contentParts.length > 0) {
                     event.payload = contentParts.join('\n').substring(0, 20000);
                 }
-                verdict = (0, governance_1.evaluateGuard)(event, world, { level });
+                verdict = (0, governance_1.evaluateGuard)(event, world, { level, trace: true });
             }
             // ─── Fix 1: Re-evaluate with known surfaces if tool is unknown ──
             // The guard engine skips guards with appliesTo when the event's tool
@@ -581,7 +880,7 @@ class NeuroVerseGuard {
             if (!toolIsKnown) {
                 for (const surface of knownSurfaces) {
                     const probeEvent = { ...event, tool: surface };
-                    const probeVerdict = (0, governance_1.evaluateGuard)(probeEvent, world, { level });
+                    const probeVerdict = (0, governance_1.evaluateGuard)(probeEvent, world, { level, trace: true });
                     verdict = takeStrictestVerdict(verdict, probeVerdict);
                     if (verdict.status === 'BLOCK')
                         break; // can't get stricter
@@ -612,6 +911,127 @@ class NeuroVerseGuard {
                 }
             }
             // ─── Build output ───────────────────────────────────────────
+            const evidence = verdict.evidence;
+            const trace = verdict.trace;
+            // Build insights from evidence (always present) + trace (when available)
+            const insights = {
+                worldId: evidence?.worldId ?? null,
+                worldName: evidence?.worldName ?? null,
+                enforcementLevel: evidence?.enforcementLevel ?? level,
+                evaluatedAt: evidence?.evaluatedAt ? new Date(evidence.evaluatedAt).toISOString() : null,
+                invariantCoverage: {
+                    satisfied: evidence?.invariantsSatisfied ?? null,
+                    total: evidence?.invariantsTotal ?? null,
+                },
+                guardsMatched: evidence?.guardsMatched ?? [],
+                rulesMatched: evidence?.rulesMatched ?? [],
+            };
+            // Rich trace data — every check the engine performed
+            if (trace) {
+                insights.durationMs = trace.durationMs ?? null;
+                if (trace.guardChecks?.length) {
+                    insights.guardChecks = trace.guardChecks.map((gc) => ({
+                        guardId: gc.guardId ?? gc.id,
+                        label: gc.label,
+                        matched: gc.matched ?? gc.triggered,
+                        enforcement: gc.enforcement,
+                        matchedPatterns: gc.matchedPatterns ?? [],
+                    }));
+                }
+                if (trace.invariantChecks?.length) {
+                    insights.invariantChecks = trace.invariantChecks.map((ic) => ({
+                        invariantId: ic.invariantId ?? ic.id,
+                        label: ic.label,
+                        satisfied: ic.satisfied,
+                    }));
+                }
+                if (trace.kernelRuleChecks?.length) {
+                    insights.kernelRuleChecks = trace.kernelRuleChecks.map((kr) => ({
+                        ruleId: kr.ruleId ?? kr.id,
+                        label: kr.label,
+                        triggered: kr.triggered,
+                    }));
+                }
+                if (trace.safetyChecks?.length) {
+                    insights.safetyChecks = trace.safetyChecks;
+                }
+                if (trace.precedenceResolution) {
+                    insights.precedenceResolution = trace.precedenceResolution;
+                }
+            }
+            // Intent classification info
+            insights.intent = {
+                resolved: event.intent.substring(0, 500),
+                source: intentSource,
+                ...(originalIntent ? { original: originalIntent } : {}),
+                ...(classification ? { classification } : {}),
+            };
+            if (contentScanOverride) {
+                insights.contentScanOverride = {
+                    triggered: true,
+                    guardId: contentScanGuardId,
+                };
+            }
+            // Warning from the engine (e.g. ALLOW with advisory)
+            if (verdict.warning) {
+                insights.warning = verdict.warning;
+            }
+            // Intent record (what agent wanted vs. what happened)
+            if (verdict.intentRecord) {
+                insights.intentRecord = verdict.intentRecord;
+            }
+            // ─── Narrative ──────────────────────────────────────────────
+            const worldCtx = extractWorldContext(world);
+            const aiNarrative = this.getNodeParameter('aiNarrative', i, false);
+            let narrativeSource = 'fallback';
+            if (aiNarrative) {
+                // Use narrative-specific AI config, falling back to classification AI config
+                const nProvider = this.getNodeParameter('narrativeAiProvider', i, 'openai');
+                const nModel = this.getNodeParameter('narrativeAiModel', i, 'gpt-4.1-mini');
+                const nApiKey = this.getNodeParameter('narrativeAiApiKey', i, '')
+                    || (aiClassification ? this.getNodeParameter('aiApiKey', i, '') : '');
+                const nEndpoint = this.getNodeParameter('narrativeAiEndpoint', i, '');
+                const narrativePrompt = buildGuardNarrativePrompt(worldCtx, verdict, event.intent, tool, trace, evidence, contentScanOverride, toolIsKnown);
+                try {
+                    insights.narrative = await callAIForNarrative(narrativePrompt, nProvider, nModel, nApiKey, nEndpoint);
+                    narrativeSource = 'ai';
+                }
+                catch (err) {
+                    insights.narrative = buildFallbackGuardNarrative(worldCtx, verdict, event.intent, tool, trace, evidence, contentScanOverride, toolIsKnown, intentSource);
+                    insights.narrative.push(`(AI narrative unavailable: ${err.message?.substring(0, 100) ?? 'unknown error'})`);
+                }
+            }
+            else {
+                insights.narrative = buildFallbackGuardNarrative(worldCtx, verdict, event.intent, tool, trace, evidence, contentScanOverride, toolIsKnown, intentSource);
+            }
+            insights.narrativeSource = narrativeSource;
+            insights.worldDescription = worldCtx.description || null;
+            insights.thesis = worldCtx.thesis || null;
+            // ─── Behavioral Analysis ──────────────────────────────────
+            // Track what the agent intended vs. what governance forced.
+            // This is the core value: "when agents couldn't do X, 40% did Y instead"
+            const executedAction = verdict.status === 'ALLOW'
+                ? intent
+                : verdict.status === 'BLOCK'
+                    ? `blocked (${verdict.reason?.substring(0, 80) ?? 'policy violation'})`
+                    : `paused for review (${verdict.reason?.substring(0, 80) ?? 'requires approval'})`;
+            const adaptation = (0, governance_1.adaptationFromVerdict)('agent', // agentId — n8n doesn't track multi-agent, but downstream nodes can
+            intent, executedAction, verdict);
+            // Detect patterns (single-event gives limited patterns, but it builds over a batch)
+            const adaptations = [adaptation];
+            const patterns = (0, governance_1.detectBehavioralPatterns)(adaptations, 1);
+            const behavioralNarrative = patterns.length > 0
+                ? (0, governance_1.generateAdaptationNarrative)(patterns)
+                : null;
+            insights.behavioral = {
+                adaptation: {
+                    intended: adaptation.intendedAction,
+                    executed: adaptation.executedAction,
+                    shiftType: adaptation.shiftType,
+                    verdict: adaptation.verdict,
+                },
+                ...(behavioralNarrative ? { behavioralNarrative } : {}),
+            };
             const outputItem = {
                 json: {
                     ...items[i].json,
@@ -619,22 +1039,8 @@ class NeuroVerseGuard {
                         status: verdict.status,
                         reason: verdict.reason ?? null,
                         ruleId: verdict.ruleId ?? null,
-                        evidence: verdict.evidence ?? null,
                     },
-                    _debug: {
-                        intent: event.intent.substring(0, 500),
-                        intentSource,
-                        toolIsKnown,
-                        ...(contentScanOverride ? {
-                            contentScanOverride: true,
-                            contentScanGuardId,
-                        } : {}),
-                        ...(classification ? {
-                            classification,
-                            originalIntent,
-                        } : {}),
-                        stringFieldsScanned: Object.keys(inputJson).filter((k) => typeof inputJson[k] === 'string'),
-                    },
+                    insights,
                 },
             };
             // ─── Fix 2: Strict enforcement — throw on BLOCK ────────────

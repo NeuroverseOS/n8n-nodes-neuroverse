@@ -55,8 +55,9 @@ Three functions. No network. No LLM. Deterministic.
 
 | Field | Description |
 |-------|-------------|
-| **World Source** | **Bundled** (default — select a pre-packaged world), **File Path**, or **Base64** |
-| **Bundled World** | Select a governance world included with this package — zero setup required |
+| **World Source** | **Bundled**, **Custom Directory**, **File Path**, or **Base64** |
+| **Bundled World** | Select a pre-packaged governance world — zero setup required |
+| **Custom Directory** | Point to a folder of your own worlds and pick from a dropdown |
 | **World File Path** | Path to your `.nv-world.zip` or extracted directory |
 | **World File (Base64)** | Base64-encoded zip — useful in Docker/cloud environments |
 | **Intent** | What the agent is trying to do |
@@ -135,43 +136,89 @@ Webhook Trigger → Simulate Agent Action → NeuroVerse Guard
 
 The example accepts a POST request with `intent` and `tool`, runs it through the guard, and returns the appropriate response (200 for ALLOW, 403 for BLOCK, 202 for PAUSE).
 
-## Building Your World File
+## Using Your Own World File
+
+The bundled worlds are great for getting started, but most teams will want to create their own governance rules.
+
+### Option A: Custom Directory (recommended)
+
+Keep all your worlds in one folder and pick from a dropdown — just like bundled worlds:
+
+1. **Build your world** at **[neuroverseos.com](https://neuroverseos.com)** — upload your docs or start from a template
+2. Extract the `.nv-world.zip` into a folder, e.g. `/data/my-worlds/acme-policy/`
+3. In the node, set **World Source** → **Custom Directory**
+4. Set **Custom Worlds Directory** to `/data/my-worlds`
+5. Your worlds appear in the **Custom World** dropdown — click the refresh icon after adding new ones
+
+You can have as many worlds as you want in one directory. Each subfolder is a world.
+
+### Option B: File Path / Base64
+
+For single-world setups or Docker/cloud environments:
+
+- **File Path** — point directly to a `.nv-world.zip` or extracted directory
+- **Base64** — pass the zip as a base64 string from another node or API
 
 A world file contains your governance rules: invariants that must always hold, guards that intercept specific actions, roles with permissions, and kernel rules for system-level constraints.
 
-**[Build your world file free at neuroverseos.com](https://neuroverseos.com)** — upload your docs or start from a template.
-
 ## Verdict Object
 
-Every output includes a `verdict` object:
+Every Guard output includes a `verdict` and an `insights` object:
 
 ```json
 {
   "verdict": {
     "status": "BLOCK",
     "reason": "Action violates invariant: margin_floor_15_percent",
-    "ruleId": "guard-pricing-change",
-    "evidence": {
-      "matchedGuard": "pricing-change-guard",
-      "invariantRef": "margin_floor_15_percent",
-      "evaluationChain": ["safety", "roles", "guards", "kernel", "level"]
+    "ruleId": "guard-pricing-change"
+  }
+}
+```
+
+## Insights Object (Guard)
+
+The `insights` object gives full visibility into *how* the governance decision was made:
+
+```json
+{
+  "insights": {
+    "worldId": "acme-policy",
+    "worldName": "Acme Policy",
+    "enforcementLevel": "standard",
+    "evaluatedAt": "2025-01-15T10:30:00.000Z",
+    "invariantCoverage": { "satisfied": 5, "total": 5 },
+    "guardsMatched": ["guard-pricing-change"],
+    "rulesMatched": ["kernel-margin-floor"],
+    "durationMs": 2,
+    "guardChecks": [
+      {
+        "guardId": "guard-pricing-change",
+        "label": "Pricing Change Guard",
+        "matched": true,
+        "enforcement": "block",
+        "matchedPatterns": ["change_price", "update_discount"]
+      }
+    ],
+    "invariantChecks": [
+      { "invariantId": "margin_floor_15_percent", "label": "Margin Floor 15%", "satisfied": false }
+    ],
+    "kernelRuleChecks": [
+      { "ruleId": "kernel-margin-floor", "label": "Enforce Margin Floor", "triggered": true }
+    ],
+    "precedenceResolution": {
+      "decidingLayer": "guards",
+      "decidingId": "guard-pricing-change",
+      "strategy": "strictest-wins"
+    },
+    "intent": {
+      "resolved": "change_price",
+      "source": "raw"
     }
   }
 }
 ```
 
-The `_debug` object contains additional diagnostic information:
-
-```json
-{
-  "_debug": {
-    "intent": "reply_to_inquiry",
-    "intentSource": "raw",
-    "toolIsKnown": true,
-    "stringFieldsScanned": ["email_body", "draft_reply"]
-  }
-}
-```
+This lets you see every guard checked, every invariant tested, and exactly which rule made the final call.
 
 ---
 
@@ -187,8 +234,9 @@ Your world file contains state variables (numeric/boolean/enum values), if/then 
 
 | Field | Description |
 |-------|-------------|
-| **World Source** | **Bundled** (default — select a pre-packaged world), **File Path**, or **Base64** |
-| **Bundled World** | Select a governance world included with this package — zero setup required |
+| **World Source** | **Bundled**, **Custom Directory**, **File Path**, or **Base64** |
+| **Bundled World** | Select a pre-packaged governance world — zero setup required |
+| **Custom Directory** | Point to a folder of your own worlds and pick from a dropdown |
 | **Steps** | Number of simulation rounds (1 = immediate impact, 5+ = cascading effects) |
 | **Profile** | Assumption profile (e.g. `best_case`, `worst_case`, `regulatory_scrutiny`) |
 | **State Overrides** | Override starting state variables with JSON — inject real metrics from upstream nodes |
@@ -233,6 +281,31 @@ Every output includes a `simulation` object:
   }
 }
 ```
+
+### Insights Object (Simulate)
+
+The Simulate node also outputs an `insights` object summarizing the entire run:
+
+```json
+{
+  "insights": {
+    "stateDeltas": {
+      "trust_score": { "from": 40, "to": 12 },
+      "engagement_health": { "from": 70, "to": 8 }
+    },
+    "totalRulesEvaluated": 6,
+    "totalRulesFired": 3,
+    "rulesNeverTriggered": [
+      { "ruleId": "rule-ad-revenue", "label": "Ad Revenue Pressure" }
+    ],
+    "rulesSummary": [
+      { "ruleId": "rule-trust-erosion", "label": "Trust Erosion", "triggeredSteps": [1, 2, 3], "excluded": false }
+    ]
+  }
+}
+```
+
+`stateDeltas` shows exactly what changed. `rulesNeverTriggered` tells you which rules exist but didn't fire — useful for understanding why a simulation passed when you expected it to fail.
 
 ### Example: Guard + Simulate Together
 
