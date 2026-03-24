@@ -592,8 +592,13 @@ class NeuroVerseSimulate {
             // ─── Extract world context for narrative + output ────────
             const worldCtx = extractWorldContext(world);
             // ─── Generate narrative ────────────────────────────────────
-            let narrative;
-            let narrativeSource = 'fallback';
+            // Layer 1: Native governance package narrative (always present)
+            const nativeNarrative = (0, governance_1.renderSimulateText)(result);
+            // Layer 2: World-context enriched narrative (always present)
+            const contextNarrative = buildFallbackNarrative(worldCtx, result, stateDeltas, allRulesEvaluated);
+            // Layer 3: AI interpretation (optional, premium)
+            let aiInterpretation = null;
+            let narrativeSource = 'native';
             if (aiNarrative) {
                 const aiProvider = this.getNodeParameter('aiProvider', i);
                 const aiModel = this.getNodeParameter('aiModel', i);
@@ -601,17 +606,12 @@ class NeuroVerseSimulate {
                 const aiEndpoint = this.getNodeParameter('aiEndpoint', i, '');
                 const prompt = buildNarrativePrompt(worldCtx, result, stateDeltas, allRulesEvaluated, profile);
                 try {
-                    narrative = await callAIForNarrative(prompt, aiProvider, aiModel, aiApiKey, aiEndpoint);
+                    aiInterpretation = await callAIForNarrative(prompt, aiProvider, aiModel, aiApiKey, aiEndpoint);
                     narrativeSource = 'ai';
                 }
                 catch (err) {
-                    // Fall back to template narrative, include the error
-                    narrative = buildFallbackNarrative(worldCtx, result, stateDeltas, allRulesEvaluated);
-                    narrative.push(`(AI narrative unavailable: ${err.message?.substring(0, 100) ?? 'unknown error'})`);
+                    aiInterpretation = `(AI narrative unavailable: ${err.message?.substring(0, 100) ?? 'unknown error'})`;
                 }
-            }
-            else {
-                narrative = buildFallbackNarrative(worldCtx, result, stateDeltas, allRulesEvaluated);
             }
             const outputItem = {
                 json: {
@@ -651,7 +651,10 @@ class NeuroVerseSimulate {
                         })),
                     },
                     insights: {
-                        narrative,
+                        narrative: aiInterpretation ?? contextNarrative,
+                        nativeNarrative,
+                        contextNarrative,
+                        ...(aiInterpretation ? { aiInterpretation } : {}),
                         narrativeSource,
                         thesis: worldCtx.thesis || null,
                         worldDescription: worldCtx.description || null,

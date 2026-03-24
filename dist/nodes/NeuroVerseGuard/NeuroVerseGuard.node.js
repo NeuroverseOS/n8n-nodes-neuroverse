@@ -1007,6 +1007,31 @@ class NeuroVerseGuard {
             insights.narrativeSource = narrativeSource;
             insights.worldDescription = worldCtx.description || null;
             insights.thesis = worldCtx.thesis || null;
+            // ─── Behavioral Analysis ──────────────────────────────────
+            // Track what the agent intended vs. what governance forced.
+            // This is the core value: "when agents couldn't do X, 40% did Y instead"
+            const executedAction = verdict.status === 'ALLOW'
+                ? intent
+                : verdict.status === 'BLOCK'
+                    ? `blocked (${verdict.reason?.substring(0, 80) ?? 'policy violation'})`
+                    : `paused for review (${verdict.reason?.substring(0, 80) ?? 'requires approval'})`;
+            const adaptation = (0, governance_1.adaptationFromVerdict)('agent', // agentId — n8n doesn't track multi-agent, but downstream nodes can
+            intent, executedAction, verdict);
+            // Detect patterns (single-event gives limited patterns, but it builds over a batch)
+            const adaptations = [adaptation];
+            const patterns = (0, governance_1.detectBehavioralPatterns)(adaptations, 1);
+            const behavioralNarrative = patterns.length > 0
+                ? (0, governance_1.generateAdaptationNarrative)(patterns)
+                : null;
+            insights.behavioral = {
+                adaptation: {
+                    intended: adaptation.intendedAction,
+                    executed: adaptation.executedAction,
+                    shiftType: adaptation.shiftType,
+                    verdict: adaptation.verdict,
+                },
+                ...(behavioralNarrative ? { behavioralNarrative } : {}),
+            };
             const outputItem = {
                 json: {
                     ...items[i].json,

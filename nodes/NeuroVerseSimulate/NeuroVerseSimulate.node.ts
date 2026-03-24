@@ -8,7 +8,7 @@ import {
   NodeConnectionTypes,
 } from 'n8n-workflow';
 
-import { loadWorld, simulateWorld } from '@neuroverseos/governance';
+import { loadWorld, simulateWorld, renderSimulateText, explainWorld, renderExplainText } from '@neuroverseos/governance';
 import type { SimulationResult } from '@neuroverseos/governance';
 import { writeFileSync, mkdtempSync, statSync, readdirSync } from 'fs';
 import { join, resolve } from 'path';
@@ -681,8 +681,15 @@ export class NeuroVerseSimulate implements INodeType {
       const worldCtx = extractWorldContext(world);
 
       // ─── Generate narrative ────────────────────────────────────
-      let narrative: string | string[];
-      let narrativeSource: 'ai' | 'fallback' = 'fallback';
+      // Layer 1: Native governance package narrative (always present)
+      const nativeNarrative = renderSimulateText(result);
+
+      // Layer 2: World-context enriched narrative (always present)
+      const contextNarrative = buildFallbackNarrative(worldCtx, result, stateDeltas, allRulesEvaluated);
+
+      // Layer 3: AI interpretation (optional, premium)
+      let aiInterpretation: string | null = null;
+      let narrativeSource: 'native' | 'ai' = 'native';
 
       if (aiNarrative) {
         const aiProvider = this.getNodeParameter('aiProvider', i) as string;
@@ -693,15 +700,11 @@ export class NeuroVerseSimulate implements INodeType {
         const prompt = buildNarrativePrompt(worldCtx, result, stateDeltas, allRulesEvaluated, profile);
 
         try {
-          narrative = await callAIForNarrative(prompt, aiProvider, aiModel, aiApiKey, aiEndpoint);
+          aiInterpretation = await callAIForNarrative(prompt, aiProvider, aiModel, aiApiKey, aiEndpoint);
           narrativeSource = 'ai';
         } catch (err: any) {
-          // Fall back to template narrative, include the error
-          narrative = buildFallbackNarrative(worldCtx, result, stateDeltas, allRulesEvaluated);
-          (narrative as string[]).push(`(AI narrative unavailable: ${err.message?.substring(0, 100) ?? 'unknown error'})`);
+          aiInterpretation = `(AI narrative unavailable: ${err.message?.substring(0, 100) ?? 'unknown error'})`;
         }
-      } else {
-        narrative = buildFallbackNarrative(worldCtx, result, stateDeltas, allRulesEvaluated);
       }
 
       const outputItem: INodeExecutionData = {
@@ -742,7 +745,10 @@ export class NeuroVerseSimulate implements INodeType {
             })),
           },
           insights: {
-            narrative,
+            narrative: aiInterpretation ?? contextNarrative,
+            nativeNarrative,
+            contextNarrative,
+            ...(aiInterpretation ? { aiInterpretation } : {}),
             narrativeSource,
             thesis: worldCtx.thesis || null,
             worldDescription: worldCtx.description || null,
