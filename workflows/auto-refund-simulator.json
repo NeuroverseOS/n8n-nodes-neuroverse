@@ -73,43 +73,16 @@
     },
     {
       "parameters": {
-        "functionCode": "// ─── Merge + Compare + Decide (UNIVERSAL) ───\n// Works with ANY world file. Uses top-level fields from the Simulate node.\n// No hardcoded metric names or world-specific logic.\n\n// Collect all simulation profiles from input items\nconst profiles = {};\nfor (const item of items) {\n  const profileName = item.json.profile;\n  profiles[profileName] = {\n    viable: item.json.viable,\n    viability: item.json.viability,\n    collapsed: item.json.collapsed,\n    worldName: item.json.worldName,\n    report: item.json.report,\n    narrative: item.json.narrative,\n    stateDeltas: item.json.stateDeltas || {},\n    simulation: item.json.simulation || {}\n  };\n}\n\nconst profileNames = Object.keys(profiles);\nconst profileList = Object.values(profiles);\n\n// ─── Universal Decision Logic ───\nconst allViable = profileList.every(p => p.viable);\nconst anyCollapsed = profileList.some(p => p.collapsed);\nconst anyCritical = profileList.some(p => p.viability === 'CRITICAL' || p.viability === 'MODEL_COLLAPSES');\nconst worldName = profileList[0]?.worldName || 'Unknown';\n\n// Find expected/middle profile for nuanced decisions\nconst expectedProfile = profiles.expected || profiles.baseline || profileList[Math.floor(profileList.length / 2)];\nconst expectedOk = expectedProfile?.viable;\n\nlet decision, recommendation;\nif (allViable) {\n  decision = 'APPROVE';\n  recommendation = `All ${profileNames.length} scenarios remain healthy. Safe to proceed.`;\n} else if (expectedOk && !anyCollapsed) {\n  decision = 'APPROVE_WITH_GUARDRAILS';\n  recommendation = 'Expected case is stable, but edge cases show degradation. Proceed with monitoring.';\n} else if (anyCritical || anyCollapsed) {\n  decision = 'BLOCK';\n  recommendation = 'System reaches CRITICAL or collapses under realistic conditions. Do not proceed without changes.';\n} else {\n  decision = 'REVIEW';\n  recommendation = 'Mixed results across profiles. Requires human review before proceeding.';\n}\n\n// ─── Build the universal report ───\nconst lines = [];\nlines.push(`===== SIMULATION COMPARISON: ${worldName} =====`);\nlines.push(`Profiles tested: ${profileNames.join(', ')}`);\nlines.push('');\n\n// Per-profile narratives (from the governance engine — world-aware)\nfor (const [name, profile] of Object.entries(profiles)) {\n  const label = name.replace(/_/g, ' ').toUpperCase();\n  const v = profile.viability || 'UNKNOWN';\n  const collapsed = profile.collapsed ? ' [COLLAPSED]' : '';\n  lines.push(`--- ${label}: ${v}${collapsed} ---`);\n  if (profile.report) {\n    lines.push(profile.report);\n  }\n  // State changes (dynamic — whatever vars the world defines)\n  const deltas = profile.stateDeltas || {};\n  const deltaEntries = Object.entries(deltas);\n  if (deltaEntries.length > 0) {\n    lines.push('  State changes:');\n    for (const [key, delta] of deltaEntries) {\n      if (delta && delta.from !== undefined) {\n        lines.push(`    ${key}: ${delta.from} -> ${delta.to}`);\n      }\n    }\n  }\n  lines.push('');\n}\n\nlines.push('--- DECISION ---');\nlines.push(`  ${decision}`);\nlines.push(`  ${recommendation}`);\n\nconst report = lines.join('\\n');\n\nreturn [{\n  json: {\n    decision,\n    recommendation,\n    report,\n    worldName,\n    profileCount: profileNames.length,\n    allViable,\n    anyCollapsed,\n    profiles: Object.fromEntries(\n      Object.entries(profiles).map(([name, p]) => [name, {\n        viability: p.viability,\n        viable: p.viable,\n        collapsed: p.collapsed,\n        stateDeltas: p.stateDeltas,\n        narrative: p.narrative\n      }])\n    )\n  }\n}];"
+        "decisionLabel": "Enable auto-refunds under $100",
+        "collapseTolerance": "none",
+        "requireAllViable": false
       },
-      "id": "merge-1",
-      "name": "Merge + Compare + Decide",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "id": "compare-1",
+      "name": "Compare Profiles",
+      "type": "@neuroverseos/n8n-nodes-neuroverse.neuroVerseCompare",
+      "typeVersion": 1,
       "position": [1100, 400],
-      "notes": "Merges all 3 simulation outputs, compares trajectories, and makes a deployment decision. Uses the Simulate node's built-in narrative and state analysis — no intermediate Analyze nodes needed."
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict"
-          },
-          "conditions": [
-            {
-              "id": "approve",
-              "leftValue": "={{ $json.decision }}",
-              "rightValue": "BLOCK",
-              "operator": {
-                "type": "string",
-                "operation": "notEquals"
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "id": "switch-1",
-      "name": "Route Decision",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [1340, 400]
+      "notes": "Compares all 3 simulation profiles side-by-side. Generates a comparison report with decision routing. No code needed."
     },
     {
       "parameters": {
@@ -120,12 +93,26 @@
       "name": "Respond: Safe to Deploy",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1600, 300]
+      "position": [1400, 200]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ status: $json.decision, decision: $json.decision, recommendation: $json.recommendation, report: $json.report, profiles: $json.profiles, topThreats: $json.topThreats }, null, 2) }}",
+        "responseBody": "={{ JSON.stringify({ status: 'REVIEW', decision: $json.decision, recommendation: $json.recommendation, report: $json.report, profiles: $json.profiles }, null, 2) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-review",
+      "name": "Respond: Needs Review",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1400, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'BLOCKED', decision: $json.decision, recommendation: $json.recommendation, report: $json.report, profiles: $json.profiles }, null, 2) }}",
         "options": {
           "responseCode": 422
         }
@@ -134,7 +121,7 @@
       "name": "Respond: Do NOT Deploy",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1600, 500]
+      "position": [1400, 600]
     }
   ],
   "connections": {
@@ -154,33 +141,29 @@
     },
     "Simulate Best Case": {
       "main": [
-        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
-        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
-        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }]
+        [{ "node": "Compare Profiles", "type": "main", "index": 0 }],
+        [{ "node": "Compare Profiles", "type": "main", "index": 0 }],
+        [{ "node": "Compare Profiles", "type": "main", "index": 0 }]
       ]
     },
     "Simulate Expected": {
       "main": [
-        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
-        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
-        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }]
+        [{ "node": "Compare Profiles", "type": "main", "index": 0 }],
+        [{ "node": "Compare Profiles", "type": "main", "index": 0 }],
+        [{ "node": "Compare Profiles", "type": "main", "index": 0 }]
       ]
     },
     "Simulate Worst Case": {
       "main": [
-        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
-        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
-        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }]
+        [{ "node": "Compare Profiles", "type": "main", "index": 0 }],
+        [{ "node": "Compare Profiles", "type": "main", "index": 0 }],
+        [{ "node": "Compare Profiles", "type": "main", "index": 0 }]
       ]
     },
-    "Merge + Compare + Decide": {
-      "main": [
-        [{ "node": "Route Decision", "type": "main", "index": 0 }]
-      ]
-    },
-    "Route Decision": {
+    "Compare Profiles": {
       "main": [
         [{ "node": "Respond: Safe to Deploy", "type": "main", "index": 0 }],
+        [{ "node": "Respond: Needs Review", "type": "main", "index": 0 }],
         [{ "node": "Respond: Do NOT Deploy", "type": "main", "index": 0 }]
       ]
     }

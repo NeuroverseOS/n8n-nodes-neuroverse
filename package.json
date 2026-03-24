@@ -31,11 +31,12 @@
     "n8nNodesApiVersion": 1,
     "nodes": [
       "dist/nodes/NeuroVerseGuard/NeuroVerseGuard.node.js",
-      "dist/nodes/NeuroVerseSimulate/NeuroVerseSimulate.node.js"
+      "dist/nodes/NeuroVerseSimulate/NeuroVerseSimulate.node.js",
+      "dist/nodes/NeuroVerseCompare/NeuroVerseCompare.node.js"
     ]
   },
   "scripts": {
-    "build": "tsc && cp nodes/NeuroVerseGuard/neuroverse.svg dist/nodes/NeuroVerseGuard/neuroverse.svg && cp nodes/NeuroVerseSimulate/neuroverse.svg dist/nodes/NeuroVerseSimulate/neuroverse.svg",
+    "build": "tsc && cp nodes/NeuroVerseGuard/neuroverse.svg dist/nodes/NeuroVerseGuard/neuroverse.svg && cp nodes/NeuroVerseSimulate/neuroverse.svg dist/nodes/NeuroVerseSimulate/neuroverse.svg && cp nodes/NeuroVerseCompare/neuroverse.svg dist/nodes/NeuroVerseCompare/neuroverse.svg",
     "dev": "tsc --watch",
     "prepublishOnly": "npm run build",
     "lint": "eslint nodes/ --ext .ts"
