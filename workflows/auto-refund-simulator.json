@@ -73,44 +73,14 @@
     },
     {
       "parameters": {
-        "functionCode": "// ─── Behavioral Analysis: Extract the story from the simulation data ───\nconst sim = items[0].json.simulation;\nconst steps = sim.stepDetails || [];\nconst profile = sim.profile || 'unknown';\n\n// Find the inflection point — first step where viability drops from initial\nconst initialViability = steps[0]?.viability || 'THRIVING';\nlet inflectionStep = null;\nlet inflectionFrom = initialViability;\nlet inflectionTo = null;\nfor (const step of steps) {\n  if (step.viability !== initialViability && !inflectionStep) {\n    inflectionStep = step.step;\n    inflectionTo = step.viability;\n    break;\n  }\n}\n\n// Count rule frequency — which rules dominate the trajectory\nconst ruleCounts = {};\nconst ruleLabels = {};\nfor (const step of steps) {\n  for (const rule of (step.rulesTriggered || [])) {\n    ruleCounts[rule.ruleId] = (ruleCounts[rule.ruleId] || 0) + 1;\n    ruleLabels[rule.ruleId] = rule.label;\n  }\n}\n\n// Sort by frequency\nconst dominantRules = Object.entries(ruleCounts)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 5)\n  .map(([id, count]) => ({ ruleId: id, label: ruleLabels[id], timesFired: count }));\n\n// Find the first cascade — a step where 3+ rules fire simultaneously\nlet cascadeStep = null;\nlet cascadeRuleCount = 0;\nfor (const step of steps) {\n  if ((step.rulesTriggered || []).length >= 3 && !cascadeStep) {\n    cascadeStep = step.step;\n    cascadeRuleCount = step.rulesTriggered.length;\n    break;\n  }\n}\n\n// Calculate degradation rates for key metrics\nconst initial = sim.initialState || {};\nconst final = sim.finalState || {};\nconst metrics = {};\nfor (const key of ['trust_score', 'revenue_margin', 'customer_satisfaction', 'abuse_rate', 'refund_rate', 'escalation_rate']) {\n  if (initial[key] !== undefined && final[key] !== undefined) {\n    const start = Number(initial[key]);\n    const end = Number(final[key]);\n    const change = end - start;\n    const pctChange = start !== 0 ? Math.round((change / start) * 100) : 0;\n    metrics[key] = {\n      start: Math.round(start * 10) / 10,\n      end: Math.round(end * 10) / 10,\n      change: Math.round(change * 10) / 10,\n      pctChange,\n      direction: change > 0 ? 'increased' : change < 0 ? 'decreased' : 'unchanged'\n    };\n  }\n}\n\n// Identify root cause — the earliest-firing degradation/structural rule\nlet rootCause = null;\nfor (const step of steps) {\n  for (const rule of (step.rulesTriggered || [])) {\n    const dominant = dominantRules.find(d => d.ruleId === rule.ruleId);\n    if (dominant && dominant.timesFired >= 3) {\n      rootCause = { ruleId: rule.ruleId, label: rule.label, firstStep: step.step, totalFires: dominant.timesFired };\n      break;\n    }\n  }\n  if (rootCause) break;\n}\n\nreturn [{\n  json: {\n    profile,\n    finalViability: sim.finalViability,\n    collapsed: sim.collapsed || false,\n    collapseStep: sim.collapseStep || null,\n    totalSteps: steps.length,\n    inflection: inflectionStep ? {\n      step: inflectionStep,\n      from: inflectionFrom,\n      to: inflectionTo\n    } : null,\n    cascade: cascadeStep ? {\n      step: cascadeStep,\n      simultaneousRules: cascadeRuleCount\n    } : null,\n    dominantRules,\n    rootCause,\n    metrics,\n    trajectory: steps.map(s => ({\n      step: s.step,\n      viability: s.viability,\n      rulesFired: s.rulesFired\n    }))\n  }\n}];"
-      },
-      "id": "analyze-best",
-      "name": "Analyze Best Case",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1060, 200]
-    },
-    {
-      "parameters": {
-        "functionCode": "// ─── Behavioral Analysis: Extract the story from the simulation data ───\nconst sim = items[0].json.simulation;\nconst steps = sim.stepDetails || [];\nconst profile = sim.profile || 'unknown';\n\n// Find the inflection point — first step where viability drops from initial\nconst initialViability = steps[0]?.viability || 'THRIVING';\nlet inflectionStep = null;\nlet inflectionFrom = initialViability;\nlet inflectionTo = null;\nfor (const step of steps) {\n  if (step.viability !== initialViability && !inflectionStep) {\n    inflectionStep = step.step;\n    inflectionTo = step.viability;\n    break;\n  }\n}\n\n// Count rule frequency — which rules dominate the trajectory\nconst ruleCounts = {};\nconst ruleLabels = {};\nfor (const step of steps) {\n  for (const rule of (step.rulesTriggered || [])) {\n    ruleCounts[rule.ruleId] = (ruleCounts[rule.ruleId] || 0) + 1;\n    ruleLabels[rule.ruleId] = rule.label;\n  }\n}\n\n// Sort by frequency\nconst dominantRules = Object.entries(ruleCounts)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 5)\n  .map(([id, count]) => ({ ruleId: id, label: ruleLabels[id], timesFired: count }));\n\n// Find the first cascade — a step where 3+ rules fire simultaneously\nlet cascadeStep = null;\nlet cascadeRuleCount = 0;\nfor (const step of steps) {\n  if ((step.rulesTriggered || []).length >= 3 && !cascadeStep) {\n    cascadeStep = step.step;\n    cascadeRuleCount = step.rulesTriggered.length;\n    break;\n  }\n}\n\n// Calculate degradation rates for key metrics\nconst initial = sim.initialState || {};\nconst final = sim.finalState || {};\nconst metrics = {};\nfor (const key of ['trust_score', 'revenue_margin', 'customer_satisfaction', 'abuse_rate', 'refund_rate', 'escalation_rate']) {\n  if (initial[key] !== undefined && final[key] !== undefined) {\n    const start = Number(initial[key]);\n    const end = Number(final[key]);\n    const change = end - start;\n    const pctChange = start !== 0 ? Math.round((change / start) * 100) : 0;\n    metrics[key] = {\n      start: Math.round(start * 10) / 10,\n      end: Math.round(end * 10) / 10,\n      change: Math.round(change * 10) / 10,\n      pctChange,\n      direction: change > 0 ? 'increased' : change < 0 ? 'decreased' : 'unchanged'\n    };\n  }\n}\n\n// Identify root cause — the earliest-firing degradation/structural rule\nlet rootCause = null;\nfor (const step of steps) {\n  for (const rule of (step.rulesTriggered || [])) {\n    const dominant = dominantRules.find(d => d.ruleId === rule.ruleId);\n    if (dominant && dominant.timesFired >= 3) {\n      rootCause = { ruleId: rule.ruleId, label: rule.label, firstStep: step.step, totalFires: dominant.timesFired };\n      break;\n    }\n  }\n  if (rootCause) break;\n}\n\nreturn [{\n  json: {\n    profile,\n    finalViability: sim.finalViability,\n    collapsed: sim.collapsed || false,\n    collapseStep: sim.collapseStep || null,\n    totalSteps: steps.length,\n    inflection: inflectionStep ? {\n      step: inflectionStep,\n      from: inflectionFrom,\n      to: inflectionTo\n    } : null,\n    cascade: cascadeStep ? {\n      step: cascadeStep,\n      simultaneousRules: cascadeRuleCount\n    } : null,\n    dominantRules,\n    rootCause,\n    metrics,\n    trajectory: steps.map(s => ({\n      step: s.step,\n      viability: s.viability,\n      rulesFired: s.rulesFired\n    }))\n  }\n}];"
-      },
-      "id": "analyze-expected",
-      "name": "Analyze Expected",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1060, 400]
-    },
-    {
-      "parameters": {
-        "functionCode": "// ─── Behavioral Analysis: Extract the story from the simulation data ───\nconst sim = items[0].json.simulation;\nconst steps = sim.stepDetails || [];\nconst profile = sim.profile || 'unknown';\n\n// Find the inflection point — first step where viability drops from initial\nconst initialViability = steps[0]?.viability || 'THRIVING';\nlet inflectionStep = null;\nlet inflectionFrom = initialViability;\nlet inflectionTo = null;\nfor (const step of steps) {\n  if (step.viability !== initialViability && !inflectionStep) {\n    inflectionStep = step.step;\n    inflectionTo = step.viability;\n    break;\n  }\n}\n\n// Count rule frequency — which rules dominate the trajectory\nconst ruleCounts = {};\nconst ruleLabels = {};\nfor (const step of steps) {\n  for (const rule of (step.rulesTriggered || [])) {\n    ruleCounts[rule.ruleId] = (ruleCounts[rule.ruleId] || 0) + 1;\n    ruleLabels[rule.ruleId] = rule.label;\n  }\n}\n\n// Sort by frequency\nconst dominantRules = Object.entries(ruleCounts)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 5)\n  .map(([id, count]) => ({ ruleId: id, label: ruleLabels[id], timesFired: count }));\n\n// Find the first cascade — a step where 3+ rules fire simultaneously\nlet cascadeStep = null;\nlet cascadeRuleCount = 0;\nfor (const step of steps) {\n  if ((step.rulesTriggered || []).length >= 3 && !cascadeStep) {\n    cascadeStep = step.step;\n    cascadeRuleCount = step.rulesTriggered.length;\n    break;\n  }\n}\n\n// Calculate degradation rates for key metrics\nconst initial = sim.initialState || {};\nconst final = sim.finalState || {};\nconst metrics = {};\nfor (const key of ['trust_score', 'revenue_margin', 'customer_satisfaction', 'abuse_rate', 'refund_rate', 'escalation_rate']) {\n  if (initial[key] !== undefined && final[key] !== undefined) {\n    const start = Number(initial[key]);\n    const end = Number(final[key]);\n    const change = end - start;\n    const pctChange = start !== 0 ? Math.round((change / start) * 100) : 0;\n    metrics[key] = {\n      start: Math.round(start * 10) / 10,\n      end: Math.round(end * 10) / 10,\n      change: Math.round(change * 10) / 10,\n      pctChange,\n      direction: change > 0 ? 'increased' : change < 0 ? 'decreased' : 'unchanged'\n    };\n  }\n}\n\n// Identify root cause — the earliest-firing degradation/structural rule\nlet rootCause = null;\nfor (const step of steps) {\n  for (const rule of (step.rulesTriggered || [])) {\n    const dominant = dominantRules.find(d => d.ruleId === rule.ruleId);\n    if (dominant && dominant.timesFired >= 3) {\n      rootCause = { ruleId: rule.ruleId, label: rule.label, firstStep: step.step, totalFires: dominant.timesFired };\n      break;\n    }\n  }\n  if (rootCause) break;\n}\n\nreturn [{\n  json: {\n    profile,\n    finalViability: sim.finalViability,\n    collapsed: sim.collapsed || false,\n    collapseStep: sim.collapseStep || null,\n    totalSteps: steps.length,\n    inflection: inflectionStep ? {\n      step: inflectionStep,\n      from: inflectionFrom,\n      to: inflectionTo\n    } : null,\n    cascade: cascadeStep ? {\n      step: cascadeStep,\n      simultaneousRules: cascadeRuleCount\n    } : null,\n    dominantRules,\n    rootCause,\n    metrics,\n    trajectory: steps.map(s => ({\n      step: s.step,\n      viability: s.viability,\n      rulesFired: s.rulesFired\n    }))\n  }\n}];"
-      },
-      "id": "analyze-worst",
-      "name": "Analyze Worst Case",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1060, 600]
-    },
-    {
-      "parameters": {
-        "functionCode": "// ─── Merge all 3 profiles and generate the behavioral comparison ───\n\n// Collect analyses from the 3 input connections\nconst best = items[0]?.json || {};\nconst expected = items[1]?.json || {};\nconst worst = items[2]?.json || {};\n\nconst profiles = { best_case: best, expected, worst_case: worst };\n\n// ─── Decision Logic ───\nconst viabilities = [best.finalViability, expected.finalViability, worst.finalViability];\nconst anyCritical = viabilities.includes('CRITICAL') || viabilities.includes('MODEL_COLLAPSES');\nconst anyCollapsed = best.collapsed || expected.collapsed || worst.collapsed;\nconst allHealthy = viabilities.every(v => v === 'THRIVING' || v === 'STABLE');\nconst expectedOk = expected.finalViability === 'THRIVING' || expected.finalViability === 'STABLE';\n\nlet decision, recommendation;\nif (allHealthy) {\n  decision = 'APPROVE';\n  recommendation = 'All scenarios remain healthy through 10 steps. Safe to enable auto-refunds.';\n} else if (expectedOk && !anyCollapsed) {\n  decision = 'APPROVE_WITH_GUARDRAILS';\n  recommendation = 'Expected case is stable, but worst case shows degradation. Enable with monitoring and abuse detection guardrails.';\n} else if (anyCritical || anyCollapsed) {\n  decision = 'BLOCK';\n  recommendation = 'System reaches CRITICAL or collapses under realistic conditions. Do NOT enable auto-refunds without fundamental changes.';\n} else {\n  decision = 'REVIEW';\n  recommendation = 'Mixed results — requires human review of the behavioral trajectories before proceeding.';\n}\n\n// ─── Find the most dangerous rule across all profiles ───\nconst allRules = {};\nfor (const [name, profile] of Object.entries(profiles)) {\n  for (const rule of (profile.dominantRules || [])) {\n    const key = rule.ruleId;\n    if (!allRules[key]) allRules[key] = { ruleId: key, label: rule.label, totalFires: 0, profiles: [] };\n    allRules[key].totalFires += rule.timesFired;\n    allRules[key].profiles.push(name);\n  }\n}\nconst topThreats = Object.values(allRules).sort((a, b) => b.totalFires - a.totalFires).slice(0, 3);\n\n// ─── Build the report ───\nconst lines = [];\nlines.push('===== BEHAVIORAL SIMULATION REPORT =====');\nlines.push('');\nlines.push('Policy: Enable AI auto-refunds under $100');\nlines.push('Simulation: 10 steps across 3 assumption profiles');\nlines.push('');\nlines.push('--- OUTCOMES ---');\nfor (const [name, profile] of Object.entries(profiles)) {\n  const label = name.replace('_', ' ').toUpperCase();\n  const v = profile.finalViability || 'UNKNOWN';\n  const collapsed = profile.collapsed ? ' [COLLAPSED]' : '';\n  lines.push(`  ${label}: ${v}${collapsed}`);\n  if (profile.inflection) {\n    lines.push(`    Inflection: Step ${profile.inflection.step} (${profile.inflection.from} -> ${profile.inflection.to})`);\n  }\n  if (profile.cascade) {\n    lines.push(`    First cascade: Step ${profile.cascade.step} (${profile.cascade.simultaneousRules} rules firing simultaneously)`);\n  }\n  if (profile.metrics?.trust_score) {\n    const t = profile.metrics.trust_score;\n    lines.push(`    Trust: ${t.start} -> ${t.end} (${t.pctChange > 0 ? '+' : ''}${t.pctChange}%)`);\n  }\n  if (profile.metrics?.revenue_margin) {\n    const r = profile.metrics.revenue_margin;\n    lines.push(`    Revenue margin: ${r.start} -> ${r.end} (${r.pctChange > 0 ? '+' : ''}${r.pctChange}%)`);\n  }\n  if (profile.metrics?.abuse_rate) {\n    const a = profile.metrics.abuse_rate;\n    lines.push(`    Abuse rate: ${a.start} -> ${a.end} (${a.pctChange > 0 ? '+' : ''}${a.pctChange}%)`);\n  }\n  lines.push('');\n}\n\nlines.push('--- ROOT CAUSE ANALYSIS ---');\nfor (const threat of topThreats) {\n  lines.push(`  ${threat.label} (${threat.ruleId})`);\n  lines.push(`    Fired ${threat.totalFires}x across profiles: ${threat.profiles.join(', ')}`);\n}\nlines.push('');\n\nif (worst.rootCause) {\n  lines.push('--- WORST CASE ROOT CAUSE ---');\n  lines.push(`  Rule: ${worst.rootCause.label}`);\n  lines.push(`  First fires at: Step ${worst.rootCause.firstStep}`);\n  lines.push(`  Total fires: ${worst.rootCause.totalFires}x in 10 steps`);\n  lines.push('');\n}\n\nlines.push('--- DECISION ---');\nlines.push(`  ${decision}`);\nlines.push(`  ${recommendation}`);\n\nconst report = lines.join('\\n');\n\nreturn [{\n  json: {\n    decision,\n    recommendation,\n    report,\n    profiles: {\n      best_case: { viability: best.finalViability, collapsed: best.collapsed, inflection: best.inflection, metrics: best.metrics },\n      expected: { viability: expected.finalViability, collapsed: expected.collapsed, inflection: expected.inflection, metrics: expected.metrics },\n      worst_case: { viability: worst.finalViability, collapsed: worst.collapsed, inflection: worst.inflection, metrics: worst.metrics }\n    },\n    topThreats,\n    worstCaseRootCause: worst.rootCause || null\n  }\n}];"
+        "functionCode": "// ─── Merge all 3 simulation profiles and make a deployment decision ───\n// The Simulate node already outputs: simulation.viable, simulation.finalViability,\n// simulation.collapsed, insights.stateDeltas, insights.nativeNarrative, etc.\n// No intermediate \"Analyze\" node needed.\n\nconst profiles = {};\nfor (const item of items) {\n  const sim = item.json.simulation;\n  const insights = item.json.insights || {};\n  profiles[sim.profile] = {\n    viable: sim.viable,\n    viability: sim.finalViability,\n    collapsed: sim.collapsed,\n    collapseStep: sim.collapseStep || null,\n    collapseRule: sim.collapseRule || null,\n    steps: sim.steps,\n    stateDeltas: insights.stateDeltas || {},\n    nativeNarrative: insights.nativeNarrative || '',\n    contextNarrative: insights.contextNarrative || '',\n    totalRulesFired: insights.totalRulesFired || 0,\n    totalRulesEvaluated: insights.totalRulesEvaluated || 0,\n    rulesNeverTriggered: insights.rulesNeverTriggered || [],\n    initialState: sim.initialState,\n    finalState: sim.finalState,\n    stepDetails: sim.stepDetails || []\n  };\n}\n\nconst best = profiles.best_case || {};\nconst expected = profiles.expected || {};\nconst worst = profiles.worst_case || {};\n\n// ─── Decision Logic ───\nconst viabilities = [best.viability, expected.viability, worst.viability];\nconst anyCritical = viabilities.includes('CRITICAL') || viabilities.includes('MODEL_COLLAPSES');\nconst anyCollapsed = best.collapsed || expected.collapsed || worst.collapsed;\nconst allHealthy = viabilities.every(v => v === 'THRIVING' || v === 'STABLE');\nconst expectedOk = expected.viability === 'THRIVING' || expected.viability === 'STABLE';\n\nlet decision, recommendation;\nif (allHealthy) {\n  decision = 'APPROVE';\n  recommendation = 'All scenarios remain healthy through 10 steps. Safe to enable auto-refunds.';\n} else if (expectedOk && !anyCollapsed) {\n  decision = 'APPROVE_WITH_GUARDRAILS';\n  recommendation = 'Expected case is stable, but worst case shows degradation. Enable with monitoring and abuse detection guardrails.';\n} else if (anyCritical || anyCollapsed) {\n  decision = 'BLOCK';\n  recommendation = 'System reaches CRITICAL or collapses under realistic conditions. Do NOT enable auto-refunds without fundamental changes.';\n} else {\n  decision = 'REVIEW';\n  recommendation = 'Mixed results — requires human review of the behavioral trajectories before proceeding.';\n}\n\n// ─── Find dominant rules across all profiles ───\nconst allRules = {};\nfor (const [name, profile] of Object.entries(profiles)) {\n  for (const step of (profile.stepDetails || [])) {\n    for (const rule of (step.rulesTriggered || [])) {\n      const key = rule.ruleId;\n      if (!allRules[key]) allRules[key] = { ruleId: key, label: rule.label, totalFires: 0, profiles: [] };\n      allRules[key].totalFires++;\n      if (!allRules[key].profiles.includes(name)) allRules[key].profiles.push(name);\n    }\n  }\n}\nconst topThreats = Object.values(allRules).sort((a, b) => b.totalFires - a.totalFires).slice(0, 3);\n\n// ─── Build the report ───\nconst lines = [];\nlines.push('===== BEHAVIORAL SIMULATION REPORT =====');\nlines.push('');\nlines.push('Policy: Enable AI auto-refunds under $100');\nlines.push('Simulation: 10 steps across 3 assumption profiles');\nlines.push('');\n\n// Include the governance engine's native narrative for each profile\nlines.push('--- NARRATIVES (from governance engine) ---');\nfor (const [name, profile] of Object.entries(profiles)) {\n  lines.push(`\\n  [${name.replace('_', ' ').toUpperCase()}]`);\n  if (profile.nativeNarrative) {\n    lines.push('  ' + profile.nativeNarrative.split('\\n').join('\\n  '));\n  }\n}\nlines.push('');\n\nlines.push('--- OUTCOMES ---');\nfor (const [name, profile] of Object.entries(profiles)) {\n  const label = name.replace('_', ' ').toUpperCase();\n  const v = profile.viability || 'UNKNOWN';\n  const collapsed = profile.collapsed ? ' [COLLAPSED]' : '';\n  lines.push(`  ${label}: ${v}${collapsed}`);\n\n  // State deltas from Simulate node\n  const deltas = profile.stateDeltas || {};\n  for (const [key, delta] of Object.entries(deltas)) {\n    if (delta && delta.from !== undefined && delta.to !== undefined) {\n      const from = typeof delta.from === 'number' ? Math.round(delta.from * 10) / 10 : delta.from;\n      const to = typeof delta.to === 'number' ? Math.round(delta.to * 10) / 10 : delta.to;\n      lines.push(`    ${key}: ${from} -> ${to}`);\n    }\n  }\n  lines.push('');\n}\n\nif (topThreats.length > 0) {\n  lines.push('--- ROOT CAUSE ANALYSIS ---');\n  for (const threat of topThreats) {\n    lines.push(`  ${threat.label || threat.ruleId}`);\n    lines.push(`    Fired ${threat.totalFires}x across profiles: ${threat.profiles.join(', ')}`);\n  }\n  lines.push('');\n}\n\nlines.push('--- DECISION ---');\nlines.push(`  ${decision}`);\nlines.push(`  ${recommendation}`);\n\nconst report = lines.join('\\n');\n\nreturn [{\n  json: {\n    decision,\n    recommendation,\n    report,\n    profiles: {\n      best_case: { viability: best.viability, viable: best.viable, collapsed: best.collapsed, stateDeltas: best.stateDeltas },\n      expected: { viability: expected.viability, viable: expected.viable, collapsed: expected.collapsed, stateDeltas: expected.stateDeltas },\n      worst_case: { viability: worst.viability, viable: worst.viable, collapsed: worst.collapsed, stateDeltas: worst.stateDeltas }\n    },\n    topThreats,\n    narratives: {\n      best_case: best.contextNarrative,\n      expected: expected.contextNarrative,\n      worst_case: worst.contextNarrative\n    }\n  }\n}];"
       },
       "id": "merge-1",
       "name": "Merge + Compare + Decide",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1360, 400],
-      "notes": "Merges all 3 behavioral analyses, compares trajectories, identifies root causes, and makes a deployment decision."
+      "position": [1100, 400],
+      "notes": "Merges all 3 simulation outputs, compares trajectories, and makes a deployment decision. Uses the Simulate node's built-in narrative and state analysis — no intermediate Analyze nodes needed."
     },
     {
       "parameters": {
@@ -124,10 +94,10 @@
             {
               "id": "approve",
               "leftValue": "={{ $json.decision }}",
-              "rightValue": "APPROVE",
+              "rightValue": "BLOCK",
               "operator": {
                 "type": "string",
-                "operation": "equals"
+                "operation": "notEquals"
               }
             }
           ],
@@ -139,7 +109,7 @@
       "name": "Route Decision",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1600, 400]
+      "position": [1340, 400]
     },
     {
       "parameters": {
@@ -150,12 +120,12 @@
       "name": "Respond: Safe to Deploy",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1860, 300]
+      "position": [1600, 300]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ status: $json.decision, decision: $json.decision, recommendation: $json.recommendation, report: $json.report, profiles: $json.profiles, topThreats: $json.topThreats, rootCause: $json.worstCaseRootCause }, null, 2) }}",
+        "responseBody": "={{ JSON.stringify({ status: $json.decision, decision: $json.decision, recommendation: $json.recommendation, report: $json.report, profiles: $json.profiles, topThreats: $json.topThreats }, null, 2) }}",
         "options": {
           "responseCode": 422
         }
@@ -164,7 +134,7 @@
       "name": "Respond: Do NOT Deploy",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1860, 500]
+      "position": [1600, 500]
     }
   ],
   "connections": {
@@ -184,37 +154,22 @@
     },
     "Simulate Best Case": {
       "main": [
-        [{ "node": "Analyze Best Case", "type": "main", "index": 0 }],
-        [{ "node": "Analyze Best Case", "type": "main", "index": 0 }],
-        [{ "node": "Analyze Best Case", "type": "main", "index": 0 }]
+        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
+        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
+        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }]
       ]
     },
     "Simulate Expected": {
       "main": [
-        [{ "node": "Analyze Expected", "type": "main", "index": 0 }],
-        [{ "node": "Analyze Expected", "type": "main", "index": 0 }],
-        [{ "node": "Analyze Expected", "type": "main", "index": 0 }]
+        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
+        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
+        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }]
       ]
     },
     "Simulate Worst Case": {
       "main": [
-        [{ "node": "Analyze Worst Case", "type": "main", "index": 0 }],
-        [{ "node": "Analyze Worst Case", "type": "main", "index": 0 }],
-        [{ "node": "Analyze Worst Case", "type": "main", "index": 0 }]
-      ]
-    },
-    "Analyze Best Case": {
-      "main": [
-        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }]
-      ]
-    },
-    "Analyze Expected": {
-      "main": [
-        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }]
-      ]
-    },
-    "Analyze Worst Case": {
-      "main": [
+        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
+        [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }],
         [{ "node": "Merge + Compare + Decide", "type": "main", "index": 0 }]
       ]
     },
